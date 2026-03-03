@@ -63,61 +63,97 @@ namespace Client.Main.Controls
         }
     }
 
-    // Optimized comparer that sorts by Model+Texture first, then depth
-    // This minimizes state changes and improves GPU cache coherency
-    sealed class WorldObjectBatchOptimizedAsc : IComparer<WorldObject>
+    readonly struct WorldObjectBatchSortKey
     {
-        public static readonly WorldObjectBatchOptimizedAsc Instance = new();
+        public readonly int TextureKey;
+        public readonly int BlendKey;
+        public readonly int ModelKey;
+        public readonly float Depth;
+        public readonly ushort NetworkId;
+        public readonly int Ordinal;
+        public readonly bool IsModel;
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int Compare(WorldObject a, WorldObject b)
+        public WorldObjectBatchSortKey(
+            int textureKey,
+            int blendKey,
+            int modelKey,
+            float depth,
+            ushort networkId,
+            int ordinal,
+            bool isModel)
         {
-            if (a is ModelObject ma && b is ModelObject mb)
-            {
-                // Prioritize by texture and blend state to minimize state changes
-                int texCmp = ComparerHelper.CompareRefs(ma.GetSortTextureHint(), mb.GetSortTextureHint());
-                if (texCmp != 0) return texCmp;
-
-                int blendCmp = ComparerHelper.CompareRefs(ma.BlendState, mb.BlendState);
-                if (blendCmp != 0) return blendCmp;
-
-                int modelCmp = ComparerHelper.CompareRefs(ma.Model, mb.Model);
-                if (modelCmp != 0) return modelCmp;
-            }
-
-            // Then by depth for correct rendering order
-            int depthCmp = a.Depth.CompareTo(b.Depth);
-            if (depthCmp != 0) return depthCmp;
-
-            return a.NetworkId.CompareTo(b.NetworkId);
+            TextureKey = textureKey;
+            BlendKey = blendKey;
+            ModelKey = modelKey;
+            Depth = depth;
+            NetworkId = networkId;
+            Ordinal = ordinal;
+            IsModel = isModel;
         }
     }
 
-    sealed class WorldObjectBatchOptimizedDesc : IComparer<WorldObject>
+    sealed class WorldObjectBatchSnapshotAsc : IComparer<WorldObject>
     {
-        public static readonly WorldObjectBatchOptimizedDesc Instance = new();
+        private IReadOnlyDictionary<WorldObject, WorldObjectBatchSortKey> _keys;
+
+        public void SetKeys(IReadOnlyDictionary<WorldObject, WorldObjectBatchSortKey> keys)
+        {
+            _keys = keys;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int CompareDepth(float a, float b)
+        {
+            bool aNaN = float.IsNaN(a);
+            bool bNaN = float.IsNaN(b);
+            if (aNaN || bNaN)
+            {
+                if (aNaN && bNaN) return 0;
+                return aNaN ? 1 : -1;
+            }
+
+            return a.CompareTo(b);
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int Compare(WorldObject a, WorldObject b)
         {
-            if (a is ModelObject ma && b is ModelObject mb)
+            if (ReferenceEquals(a, b))
+                return 0;
+            if (a is null)
+                return -1;
+            if (b is null)
+                return 1;
+
+            if (_keys == null ||
+                !_keys.TryGetValue(a, out var ka) ||
+                !_keys.TryGetValue(b, out var kb))
             {
-                // Prioritize by texture and blend state to minimize state changes
-                int texCmp = ComparerHelper.CompareRefs(ma.GetSortTextureHint(), mb.GetSortTextureHint());
+                return WorldObjectDepthAsc.Instance.Compare(a, b);
+            }
+
+            if (ka.IsModel && kb.IsModel)
+            {
+                int texCmp = ka.TextureKey.CompareTo(kb.TextureKey);
                 if (texCmp != 0) return texCmp;
 
-                int blendCmp = ComparerHelper.CompareRefs(ma.BlendState, mb.BlendState);
+                int blendCmp = ka.BlendKey.CompareTo(kb.BlendKey);
                 if (blendCmp != 0) return blendCmp;
 
-                int modelCmp = ComparerHelper.CompareRefs(ma.Model, mb.Model);
+                int modelCmp = ka.ModelKey.CompareTo(kb.ModelKey);
                 if (modelCmp != 0) return modelCmp;
             }
 
-            // Then by depth (descending) for correct rendering order
-            int depthCmp = b.Depth.CompareTo(a.Depth);
+            int depthCmp = CompareDepth(ka.Depth, kb.Depth);
             if (depthCmp != 0) return depthCmp;
 
-            return b.NetworkId.CompareTo(a.NetworkId);
+            int idCmp = ka.NetworkId.CompareTo(kb.NetworkId);
+            if (idCmp != 0) return idCmp;
+
+            int ordinalCmp = ka.Ordinal.CompareTo(kb.Ordinal);
+            if (ordinalCmp != 0) return ordinalCmp;
+
+            return ComparerHelper.CompareRefs(a, b);
         }
     }
 
@@ -136,6 +172,8 @@ namespace Client.Main.Controls
         private readonly List<WorldObject> _solidBehind = [];
         private readonly List<WorldObject> _transparentObjects = [];
         private readonly List<WorldObject> _solidInFront = [];
+        private readonly Dictionary<WorldObject, WorldObjectBatchSortKey> _batchSortKeys = [];
+        private readonly WorldObjectBatchSnapshotAsc _batchSortComparerAsc = new();
         private readonly List<WalkerObject> _walkers = [];
         private readonly List<PlayerObject> _players = [];
         private readonly List<MonsterObject> _monsters = [];
@@ -709,13 +747,23 @@ namespace Client.Main.Controls
 
             // Sort lists
             if (_solidBehind.Count > 1)
-                _solidBehind.Sort(Constants.ENABLE_BATCH_OPTIMIZED_SORTING ? WorldObjectBatchOptimizedAsc.Instance : WorldObjectDepthAsc.Instance);
+            {
+                if (Constants.ENABLE_BATCH_OPTIMIZED_SORTING)
+                    SortSolidListBatchOptimizedAsc(_solidBehind);
+                else
+                    _solidBehind.Sort(WorldObjectDepthAsc.Instance);
+            }
 
             if (_transparentObjects.Count > 1)
                 _transparentObjects.Sort(WorldObjectDepthDesc.Instance);
 
             if (_solidInFront.Count > 1)
-                _solidInFront.Sort(Constants.ENABLE_BATCH_OPTIMIZED_SORTING ? WorldObjectBatchOptimizedAsc.Instance : WorldObjectDepthAsc.Instance);
+            {
+                if (Constants.ENABLE_BATCH_OPTIMIZED_SORTING)
+                    SortSolidListBatchOptimizedAsc(_solidInFront);
+                else
+                    _solidInFront.Sort(WorldObjectDepthAsc.Instance);
+            }
 
 
             // Draws
@@ -729,6 +777,47 @@ namespace Client.Main.Controls
             DrawAfterPass(_solidInFront, DepthStateDefault, time);
 
             OverheadNameplateRenderer.FlushQueuedNameplates(GraphicsManager.Instance.Sprite);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int GetRefSortKey(object value)
+            => value == null ? 0 : RuntimeHelpers.GetHashCode(value);
+
+        private void SortSolidListBatchOptimizedAsc(List<WorldObject> list)
+        {
+            _batchSortKeys.Clear();
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                var obj = list[i];
+                if (obj == null)
+                    continue;
+
+                int textureKey = 0;
+                int blendKey = 0;
+                int modelKey = 0;
+                bool isModel = false;
+
+                if (obj is ModelObject model)
+                {
+                    isModel = true;
+                    textureKey = GetRefSortKey(model.GetSortTextureHint());
+                    blendKey = GetRefSortKey(model.BlendState);
+                    modelKey = GetRefSortKey(model.Model);
+                }
+
+                _batchSortKeys[obj] = new WorldObjectBatchSortKey(
+                    textureKey,
+                    blendKey,
+                    modelKey,
+                    obj.Depth,
+                    obj.NetworkId,
+                    i,
+                    isModel);
+            }
+
+            _batchSortComparerAsc.SetKeys(_batchSortKeys);
+            list.Sort(_batchSortComparerAsc);
         }
 
         private void DrawListWithSpriteBatchGrouping(List<WorldObject> list, DepthStencilState depthState, GameTime time)
