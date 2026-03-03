@@ -96,7 +96,7 @@ struct VertexInputSkinned
     float3 Normal    : NORMAL0;
     float2 TexCoord  : TEXCOORD0;
     float4 Color     : COLOR0;
-    float  BoneIndex : TEXCOORD1;
+    float2 BoneIndices : TEXCOORD1;
 };
 
 struct VertexInputSkinnedInstanced
@@ -105,7 +105,7 @@ struct VertexInputSkinnedInstanced
     float3 Normal        : NORMAL0;
     float2 TexCoord      : TEXCOORD0;
     float4 Color         : COLOR0;
-    float  BoneIndex     : TEXCOORD1;
+    float2 BoneIndices   : TEXCOORD1;
     float4 InstWorld0    : TEXCOORD2;
     float4 InstWorld1    : TEXCOORD3;
     float4 InstWorld2    : TEXCOORD4;
@@ -295,14 +295,16 @@ PixelInput VS_Objects(VertexInput input)
 PixelInput VS_ObjectsSkinned(VertexInputSkinned input)
 {
     PixelInput output;
-    int boneIndex = min(max((int)input.BoneIndex, 0), 255);
-    float4 localPos = mul(float4(input.Position, 1.0), BoneMatrices[boneIndex]);
+    int positionBoneIndex = min(max((int)input.BoneIndices.x, 0), 255);
+    int normalBoneIndex = min(max((int)input.BoneIndices.y, 0), 255);
+    float4 localPos = mul(float4(input.Position, 1.0), BoneMatrices[positionBoneIndex]);
+    float3 localNormal = mul(input.Normal, (float3x3)BoneMatrices[normalBoneIndex]);
     
     output.WorldPos = mul(localPos, World).xyz;
     // ALU TRICK: localPos * WorldViewProjection is mathematically identical to worldPos * View * Projection
     // but saves 2 matrix multiplications per vertex!
     output.Position = mul(localPos, WorldViewProjection);
-    output.Normal = normalize(mul(input.Normal, (float3x3)World));
+    output.Normal = normalize(mul(localNormal, (float3x3)World));
     output.TexCoord = input.TexCoord;
     output.Color = input.Color;
     output.DynamicLight = float3(0, 0, 0);
@@ -312,9 +314,10 @@ PixelInput VS_ObjectsSkinned(VertexInputSkinned input)
 PixelInput VS_ObjectsSkinnedInstanced(VertexInputSkinnedInstanced input)
 {
     PixelInput output;
-    int boneIndex = min(max((int)input.BoneIndex, 0), 255);
+    int positionBoneIndex = min(max((int)input.BoneIndices.x, 0), 255);
+    int normalBoneIndex = min(max((int)input.BoneIndices.y, 0), 255);
     float4x4 instanceWorld = float4x4(input.InstWorld0, input.InstWorld1, input.InstWorld2, input.InstWorld3);
-    float4 localPos = mul(float4(input.Position, 1.0), BoneMatrices[boneIndex]);
+    float4 localPos = mul(float4(input.Position, 1.0), BoneMatrices[positionBoneIndex]);
     float4 worldPos = mul(localPos, instanceWorld);
     
     output.WorldPos = worldPos.xyz;
@@ -322,7 +325,7 @@ PixelInput VS_ObjectsSkinnedInstanced(VertexInputSkinnedInstanced input)
     // mul(mul(worldPos, View), Projection) takes 8 operations instead of 20!
     output.Position = mul(mul(worldPos, View), Projection);
     
-    float3 localNormal = mul(input.Normal, (float3x3)BoneMatrices[boneIndex]);
+    float3 localNormal = mul(input.Normal, (float3x3)BoneMatrices[normalBoneIndex]);
     output.Normal = normalize(mul(localNormal, (float3x3)instanceWorld));
     output.TexCoord = input.TexCoord;
     output.Color = input.Color * input.InstanceColor;
@@ -505,7 +508,7 @@ ShadowVertexOutput ShadowVS(VertexInput input)
 ShadowVertexOutput ShadowVS_Skinned(VertexInputSkinned input)
 {
     ShadowVertexOutput output;
-    int boneIndex = min(max((int)input.BoneIndex, 0), 255);
+    int boneIndex = min(max((int)input.BoneIndices.x, 0), 255);
     float4 localPos = mul(float4(input.Position, 1.0), BoneMatrices[boneIndex]);
     float4 worldPos = mul(localPos, World);
     output.Position = mul(worldPos, LightViewProjection);

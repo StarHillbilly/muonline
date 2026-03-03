@@ -339,7 +339,7 @@ namespace Client.Main.Controls
                     if (obj == null || !ReferenceEquals(obj.World, this) || obj.Status != GameControlStatus.NonInitialized)
                         continue;
 
-                    obj.Load().ConfigureAwait(false);
+                    QueueObjectInitialization(obj);
                 }
             }
 
@@ -368,6 +368,45 @@ namespace Client.Main.Controls
             else if (_positionDirtyObjects.Count > 0)
             {
                 RefreshDirtyVisibleObjects();
+            }
+        }
+
+        private void QueueObjectInitialization(WorldObject obj)
+        {
+            if (obj == null || obj.Status != GameControlStatus.NonInitialized)
+                return;
+
+            bool queued = MuGame.TaskScheduler?.QueueTask(
+                () => LoadInitializedObjectAsync(obj),
+                Controllers.TaskScheduler.Priority.Low) == true;
+
+            if (!queued)
+            {
+                _ = LoadInitializedObjectAsync(obj);
+            }
+        }
+
+        private async Task LoadInitializedObjectAsync(WorldObject obj)
+        {
+            try
+            {
+                await obj.Load();
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Failed to initialize world object {ObjectType} ({NetworkId:X4}).", obj.GetType().Name, obj.NetworkId);
+                MuGame.ScheduleOnMainThread(() =>
+                {
+                    if (ReferenceEquals(obj.World, this))
+                    {
+                        RemoveObject(obj);
+                    }
+
+                    if (obj.Status != GameControlStatus.Disposed)
+                    {
+                        obj.Dispose();
+                    }
+                });
             }
         }
 

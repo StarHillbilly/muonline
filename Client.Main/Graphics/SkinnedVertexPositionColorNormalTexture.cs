@@ -5,7 +5,7 @@ namespace Client.Main.Graphics
 {
     /// <summary>
     /// Vertex format for GPU skinning path (single-bone influence per vertex).
-    /// Bone index is passed as TEXCOORD1 to keep compatibility with custom effects.
+    /// Position and normal can reference different bones in BMD, so we pass both indices.
     /// </summary>
     public struct SkinnedVertexPositionColorNormalTexture : IVertexType
     {
@@ -13,14 +13,14 @@ namespace Client.Main.Graphics
         public Color Color;
         public Vector3 Normal;
         public Vector2 TextureCoordinate;
-        public float BoneIndex;
+        public Vector2 BoneIndices;
 
         public static readonly VertexDeclaration VertexDeclaration = new VertexDeclaration(
             new VertexElement(0, VertexElementFormat.Vector3, VertexElementUsage.Position, 0),
             new VertexElement(12, VertexElementFormat.Color, VertexElementUsage.Color, 0),
             new VertexElement(16, VertexElementFormat.Vector3, VertexElementUsage.Normal, 0),
             new VertexElement(28, VertexElementFormat.Vector2, VertexElementUsage.TextureCoordinate, 0),
-            new VertexElement(36, VertexElementFormat.Single, VertexElementUsage.TextureCoordinate, 1)
+            new VertexElement(36, VertexElementFormat.Vector2, VertexElementUsage.TextureCoordinate, 1)
         );
 
         VertexDeclaration IVertexType.VertexDeclaration => VertexDeclaration;
@@ -30,13 +30,13 @@ namespace Client.Main.Graphics
             Color color,
             Vector3 normal,
             Vector2 textureCoordinate,
-            float boneIndex)
+            Vector2 boneIndices)
         {
             Position = position;
             Color = color;
             Normal = normal;
             TextureCoordinate = textureCoordinate;
-            BoneIndex = boneIndex;
+            BoneIndices = boneIndices;
         }
     }
 }

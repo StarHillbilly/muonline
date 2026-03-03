@@ -207,6 +207,46 @@ namespace Client.Main.Content
                 p.X * m.M13 + p.Y * m.M23 + p.Z * m.M33 + m.M43);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Vector3 FastTransformNormal(in Matrix m, in System.Numerics.Vector3 n)
+        {
+            return new Vector3(
+                n.X * m.M11 + n.Y * m.M21 + n.Z * m.M31,
+                n.X * m.M12 + n.Y * m.M22 + n.Z * m.M32,
+                n.X * m.M13 + n.Y * m.M23 + n.Z * m.M33);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool TryResolveNormalBoneIndex(BMDTextureMesh mesh, int normalIndex, out int boneIndex)
+        {
+            boneIndex = 0;
+            if (mesh == null || mesh.Normals == null || mesh.Vertices == null ||
+                (uint)normalIndex >= (uint)mesh.Normals.Length)
+            {
+                return false;
+            }
+
+            var normal = mesh.Normals[normalIndex];
+            if (normal.Node >= 0)
+            {
+                boneIndex = normal.Node;
+                return true;
+            }
+
+            int bindVertexIndex = normal.BindVertex;
+            if ((uint)bindVertexIndex < (uint)mesh.Vertices.Length)
+            {
+                short bindVertexBone = mesh.Vertices[bindVertexIndex].Node;
+                if (bindVertexBone >= 0)
+                {
+                    boneIndex = bindVertexBone;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         public Task<BMD> Prepare(string path, string textureFolder = null)
         {
             lock (_bmds)
@@ -353,6 +393,13 @@ namespace Client.Main.Content
                             set.Add(node);
                     }
 
+                    var normals = mesh.Normals;
+                    for (int i = 0; i < normals.Length; i++)
+                    {
+                        if (TryResolveNormalBoneIndex(mesh, i, out int normalBone) && normalBone >= 0)
+                            set.Add((short)normalBone);
+                    }
+
                     usedBones = set.Count > 0 ? set.ToArray() : Array.Empty<short>();
                     _meshUsedBones[cacheKey] = usedBones;
                 }
@@ -420,7 +467,9 @@ namespace Client.Main.Content
             // Build vertex data with unique-vertex transform caching
             VertexPositionColorNormalTexture[] vertices = null;
             Vector3[] posCache = null;
+            Vector3[] normalCache = null;
             bool[] visited = null;
+            bool[] normalVisited = null;
             int[] triangleOffsets = null;
             ITexCoordDeformer texCoordDeformer = vertexDeformer as ITexCoordDeformer;
 
@@ -428,6 +477,7 @@ namespace Client.Main.Content
             {
                 vertices = ArrayPool<VertexPositionColorNormalTexture>.Shared.Rent(totalVertices);
                 posCache = ArrayPool<Vector3>.Shared.Rent(mesh.Vertices.Length);
+                normalCache = ArrayPool<Vector3>.Shared.Rent(mesh.Normals.Length);
                 bool useParallelTransform = EnableParallelCpuSkinning &&
                                             vertexDeformer == null &&
                                             mesh.Vertices.Length >= ParallelCpuSkinningVertexThreshold;
@@ -437,7 +487,9 @@ namespace Client.Main.Content
                 if (!useParallelTransform)
                 {
                     visited = ArrayPool<bool>.Shared.Rent(mesh.Vertices.Length);
+                    normalVisited = ArrayPool<bool>.Shared.Rent(mesh.Normals.Length);
                     Array.Clear(visited, 0, mesh.Vertices.Length);
+                    Array.Clear(normalVisited, 0, mesh.Normals.Length);
                 }
 
                 int v = 0;
@@ -446,6 +498,7 @@ namespace Client.Main.Content
                 if (useParallelTransform)
                 {
                     var meshVertices = mesh.Vertices;
+                    var meshNormals = mesh.Normals;
                     int boneCount = boneMatrix.Length;
 
                     Parallel.For(0, meshVertices.Length, CpuSkinningParallelOptions, vi =>
@@ -458,6 +511,20 @@ namespace Client.Main.Content
                         else
                         {
                             posCache[vi] = vert.Position;
+                        }
+                    });
+
+                    Parallel.For(0, meshNormals.Length, CpuSkinningParallelOptions, ni =>
+                    {
+                        var srcNormal = meshNormals[ni];
+                        if (TryResolveNormalBoneIndex(mesh, ni, out int normalBoneIndex) &&
+                            (uint)normalBoneIndex < (uint)boneCount)
+                        {
+                            normalCache[ni] = FastTransformNormal(in boneMatrix[normalBoneIndex], in srcNormal.Normal);
+                        }
+                        else
+                        {
+                            normalCache[ni] = srcNormal.Normal;
                         }
                     });
 
@@ -488,7 +555,7 @@ namespace Client.Main.Content
                             int ni = tri.NormalIndex[j];
                             int ti = tri.TexCoordIndex[j];
 
-                            var normal = mesh.Normals[ni].Normal;
+                            var normal = normalCache[ni];
                             var uv = mesh.TexCoords[ti];
 
                             vertices[dst + j] = new VertexPositionColorNormalTexture(
@@ -528,7 +595,22 @@ namespace Client.Main.Content
                             }
 
                             int ni = tri.NormalIndex[j];
-                            var normal = mesh.Normals[ni].Normal; // keep as-is (object space path)
+                            if (!useParallelTransform && !normalVisited[ni])
+                            {
+                                normalVisited[ni] = true;
+                                var srcNormal = mesh.Normals[ni];
+                                if (TryResolveNormalBoneIndex(mesh, ni, out int normalBoneIndex) &&
+                                    (uint)normalBoneIndex < (uint)boneMatrix.Length)
+                                {
+                                    normalCache[ni] = FastTransformNormal(in boneMatrix[normalBoneIndex], in srcNormal.Normal);
+                                }
+                                else
+                                {
+                                    normalCache[ni] = srcNormal.Normal;
+                                }
+                            }
+
+                            var normal = normalCache[ni];
 
                             int ti = tri.TexCoordIndex[j];
                             var uv = mesh.TexCoords[ti];
@@ -605,9 +687,19 @@ namespace Client.Main.Content
                     ArrayPool<Vector3>.Shared.Return(posCache);
                 }
 
+                if (normalCache != null)
+                {
+                    ArrayPool<Vector3>.Shared.Return(normalCache);
+                }
+
                 if (visited != null)
                 {
                     ArrayPool<bool>.Shared.Return(visited, clearArray: true);
+                }
+
+                if (normalVisited != null)
+                {
+                    ArrayPool<bool>.Shared.Return(normalVisited, clearArray: true);
                 }
 
                 if (triangleOffsets != null)
@@ -683,9 +775,15 @@ namespace Client.Main.Content
                         int ti = tri.TexCoordIndex[j];
 
                         var vert = mesh.Vertices[vi];
-                        int boneIndex = vert.Node >= 0 ? vert.Node : 0;
-                        if (boneIndex > maxBoneIndex)
-                            maxBoneIndex = boneIndex;
+                        int positionBoneIndex = vert.Node >= 0 ? vert.Node : 0;
+                        int normalBoneIndex = positionBoneIndex;
+                        if (TryResolveNormalBoneIndex(mesh, ni, out int resolvedNormalBone) && resolvedNormalBone >= 0)
+                            normalBoneIndex = resolvedNormalBone;
+
+                        if (positionBoneIndex > maxBoneIndex)
+                            maxBoneIndex = positionBoneIndex;
+                        if (normalBoneIndex > maxBoneIndex)
+                            maxBoneIndex = normalBoneIndex;
 
                         var normal = mesh.Normals[ni].Normal;
                         var uv = mesh.TexCoords[ti];
@@ -695,7 +793,7 @@ namespace Client.Main.Content
                             Color.White,
                             normal,
                             new Vector2(uv.U, uv.V),
-                            boneIndex);
+                            new Vector2(positionBoneIndex, normalBoneIndex));
                     }
                 }
 

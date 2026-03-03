@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
+using System.Threading.Tasks;
 
 namespace Client.Main.Controllers
 {
@@ -23,6 +24,10 @@ namespace Client.Main.Controllers
         private long _processedTasks;
         private readonly Stopwatch _uptimeStopwatch = new();
         private readonly Stopwatch _frameStopwatch = new();
+        private int _lastFrameProcessedTasks;
+        private int _lastFrameQueueAtStart;
+        private int _lastFrameQueueRemaining;
+        private double _lastFrameProcessingMs;
 
         // Priority levels
         public enum Priority
@@ -87,26 +92,46 @@ namespace Client.Main.Controllers
         }
 
         /// <summary>
+        /// Queues an asynchronous task and observes failures explicitly.
+        /// </summary>
+        public bool QueueTask(Func<Task> asyncAction, Priority priority = Priority.Normal)
+        {
+            if (asyncAction == null) return false;
+
+            return QueueTask(() =>
+            {
+                Task task = asyncAction();
+                if (!task.IsCompletedSuccessfully)
+                {
+                    _ = ObserveTaskAsync(task, priority);
+                }
+            }, priority);
+        }
+
+        /// <summary>
         /// Processes queued tasks on the main thread. Should be called each frame.
         /// </summary>
-        public void ProcessFrame()
+        public void ProcessFrame(int workScale = 1)
         {
             if (_cts.IsCancellationRequested) return;
+            workScale = Math.Max(1, workScale);
 
             _frameStopwatch.Restart();
             var processedThisFrame = 0;
             int queuedAtStart = _taskQueue.Count;
-            int maxTasksThisFrame = _maxTasksPerFrame;
+            int maxTasksThisFrame = _maxTasksPerFrame * workScale;
+            TimeSpan maxProcessingTime = TimeSpan.FromTicks(_maxProcessingTimePerFrame.Ticks * workScale);
 
             // Increase throughput when queue is backing up, still capped by time budget.
             if (queuedAtStart > 40)
             {
-                maxTasksThisFrame = Math.Min(12, _maxTasksPerFrame + (queuedAtStart / 25));
+                int adaptiveCap = 12 * workScale;
+                maxTasksThisFrame = Math.Min(adaptiveCap, maxTasksThisFrame + (queuedAtStart / 25));
             }
 
             while (processedThisFrame < maxTasksThisFrame)
             {
-                if (_frameStopwatch.Elapsed >= _maxProcessingTimePerFrame)
+                if (_frameStopwatch.Elapsed >= maxProcessingTime)
                 {
                     _logger.LogDebug("Frame processing time limit reached ({ElapsedMs}ms). Remaining tasks: {Count}",
                                     _frameStopwatch.Elapsed.TotalMilliseconds, _taskQueue.Count);
@@ -139,6 +164,10 @@ namespace Client.Main.Controllers
             }
 
             int remaining = _taskQueue.Count;
+            _lastFrameProcessedTasks = processedThisFrame;
+            _lastFrameQueueAtStart = queuedAtStart;
+            _lastFrameQueueRemaining = remaining;
+            _lastFrameProcessingMs = _frameStopwatch.Elapsed.TotalMilliseconds;
             if (remaining > 50) // Warn about buildup
             {
                 _logger.LogWarning("Task queue is backing up. Current count: {Count}", remaining);
@@ -149,6 +178,11 @@ namespace Client.Main.Controllers
         /// Gets the number of currently queued tasks
         /// </summary>
         public int QueuedTaskCount => _taskQueue.Count;
+        public int LastFrameProcessedTasks => _lastFrameProcessedTasks;
+        public int LastFrameQueueAtStart => _lastFrameQueueAtStart;
+        public int LastFrameQueueRemaining => _lastFrameQueueRemaining;
+        public double LastFrameProcessingMs => _lastFrameProcessingMs;
+        public long TotalProcessedTasks => Interlocked.Read(ref _processedTasks);
 
         /// <summary>
         /// Gets statistics about task processing
@@ -176,6 +210,18 @@ namespace Client.Main.Controllers
         {
             _cts.Cancel();
             ClearQueue();
+        }
+
+        private async Task ObserveTaskAsync(Task task, Priority priority)
+        {
+            try
+            {
+                await task.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error executing async scheduled task - Priority: {Priority}", priority);
+            }
         }
 
         // Simple concurrent priority queue implementation

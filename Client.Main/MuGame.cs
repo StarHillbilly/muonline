@@ -15,12 +15,11 @@ using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using Microsoft.Xna.Framework.Input.Touch;
 using System;
-using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading.Tasks;
 
 
 namespace Client.Main
@@ -30,37 +29,12 @@ namespace Client.Main
         private const string LocalSettingsFileName = "appsettings.local.json";
         private const int MaxMainThreadActionsPerFrame = 96;
         private static readonly TimeSpan MaxMainThreadActionTimePerFrame = TimeSpan.FromMilliseconds(3);
+        private static readonly TimeSpan SimulationFixedStep = TimeSpan.FromSeconds(1.0 / 60.0);
+        private const int SimulationMaxStepsPerFrame = 4;
+        private static readonly TimeSpan SimulationMaxAcceptedElapsed = TimeSpan.FromMilliseconds(250);
         // Static Fields
         private static Controllers.TaskScheduler _taskScheduler;
-        private static readonly ConcurrentQueue<IMainThreadAction> _mainThreadActions = new ConcurrentQueue<IMainThreadAction>();
-
-        private interface IMainThreadAction
-        {
-            void Invoke();
-        }
-
-        private sealed class QueuedAction : IMainThreadAction
-        {
-            private readonly Action _action;
-
-            public QueuedAction(Action action) => _action = action ?? throw new ArgumentNullException(nameof(action));
-
-            public void Invoke() => _action();
-        }
-
-        private sealed class QueuedAction<TState> : IMainThreadAction
-        {
-            private readonly Action<TState> _action;
-            private readonly TState _state;
-
-            public QueuedAction(Action<TState> action, TState state)
-            {
-                _action = action ?? throw new ArgumentNullException(nameof(action));
-                _state = state;
-            }
-
-            public void Invoke() => _action(_state);
-        }
+        private static readonly MainThreadDispatcher _mainThreadDispatcher = new(null, MaxMainThreadActionsPerFrame, MaxMainThreadActionTimePerFrame);
 
         // Static Properties
         public static MuGame Instance { get; private set; }
@@ -73,10 +47,20 @@ namespace Client.Main
         public static string LocalSettingsPath => Path.Combine(ConfigDirectory ?? AppContext.BaseDirectory, LocalSettingsFileName);
         public static Controllers.TaskScheduler TaskScheduler => _taskScheduler;
         public static int FrameIndex { get; private set; }
+        public static int MainThreadPendingActions => _mainThreadDispatcher.PendingCount;
+        public static int MainThreadProcessedActionsLastFrame => _mainThreadDispatcher.LastProcessedCount;
+        public static long MainThreadProcessedActionsTotal => _mainThreadDispatcher.TotalProcessedCount;
+        public static int LastSimulationStepCount { get; private set; }
+        public static double LastSimulationAcceptedElapsedMs { get; private set; }
+        public static double LastSimulationAccumulationAlpha { get; private set; }
 
         // Instance Fields
         private readonly GraphicsDeviceManager _graphics;
         private ILogger _logger = AppLoggerFactory?.CreateLogger<MuGame>();
+        private readonly DeterministicFrameClock _simulationClock = new(
+            SimulationFixedStep,
+            SimulationMaxStepsPerFrame,
+            SimulationMaxAcceptedElapsed);
         private bool _networkDisposed = false;
         private float _scaleFactor;
         private bool _effectCacheValid = false;
@@ -170,10 +154,7 @@ namespace Client.Main
         /// <param name="action">The action to execute.</param>
         public static void ScheduleOnMainThread(Action action)
         {
-            if (action != null)
-            {
-                _mainThreadActions.Enqueue(new QueuedAction(action));
-            }
+            _mainThreadDispatcher.Enqueue(action);
         }
 
         /// <summary>
@@ -181,10 +162,15 @@ namespace Client.Main
         /// </summary>
         public static void ScheduleOnMainThread<TState>(Action<TState> action, TState state)
         {
-            if (action != null)
-            {
-                _mainThreadActions.Enqueue(new QueuedAction<TState>(action, state));
-            }
+            _mainThreadDispatcher.Enqueue(action, state);
+        }
+
+        /// <summary>
+        /// Schedules an async action to be started on the main game thread.
+        /// </summary>
+        public static void ScheduleOnMainThread(Func<Task> action)
+        {
+            _mainThreadDispatcher.Enqueue(action);
         }
 
         private static bool ValidateSettings(MuOnlineSettings settings, ILogger logger)
@@ -346,6 +332,7 @@ namespace Client.Main
             });
 
             _logger = AppLoggerFactory.CreateLogger<MuGame>();
+            _mainThreadDispatcher.SetLogger(_logger);
             var bootLogger = AppLoggerFactory.CreateLogger("MuGame.Boot"); // Logger for startup
 
             // --- Load Settings ---
@@ -450,10 +437,17 @@ namespace Client.Main
         {
             UPSCounter.Instance.CalcUPS(gameTime);
 
-            ProcessMainThreadActions();
+            var simStep = _simulationClock.Advance(gameTime.ElapsedGameTime);
+            LastSimulationStepCount = simStep.StepCount;
+            LastSimulationAcceptedElapsedMs = simStep.AcceptedElapsed.TotalMilliseconds;
+            LastSimulationAccumulationAlpha = simStep.InterpolationAlpha;
+
+            int workScale = Math.Max(1, simStep.StepCount);
+
+            ProcessMainThreadActions(workScale);
 
             // Process prioritized tasks using the task scheduler
-            _taskScheduler.ProcessFrame();
+            _taskScheduler?.ProcessFrame(workScale);
 
             try // outer try
             {
@@ -493,31 +487,9 @@ namespace Client.Main
             }
         }
 
-        private void ProcessMainThreadActions()
+        private void ProcessMainThreadActions(int workScale)
         {
-            if (_mainThreadActions.IsEmpty)
-                return;
-
-            int processed = 0;
-            long frameStart = Stopwatch.GetTimestamp();
-
-            while (processed < MaxMainThreadActionsPerFrame &&
-                   _mainThreadActions.TryDequeue(out var action))
-            {
-                try
-                {
-                    action.Invoke();
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogError(ex, "Error executing main-thread scheduled action.");
-                }
-
-                processed++;
-
-                if (Stopwatch.GetElapsedTime(frameStart) >= MaxMainThreadActionTimePerFrame)
-                    break;
-            }
+            _mainThreadDispatcher.ProcessPending(workScale);
         }
 
         protected override void LoadContent()
