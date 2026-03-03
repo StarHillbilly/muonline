@@ -150,6 +150,7 @@ namespace Client.Main.Objects
                 float totalAlpha = TotalAlpha;
                 float blendMeshLight = BlendMeshLight;
                 bool textureDirty = (_invalidatedBufferFlags & BUFFER_FLAG_TEXTURE) != 0;
+                bool hasPendingTextureResources = false;
 
                 // Process only meshes that need updates
                 for (int meshIndex = 0; meshIndex < meshCount; meshIndex++)
@@ -184,7 +185,12 @@ namespace Client.Main.Objects
 
                         if (canUseGpuSkinning && (!gpuSkinReady && TryEnableGpuSkinnedMesh(meshIndex, mesh) || gpuSkinReady))
                         {
-                            EnsureMeshTextureLoaded(meshIndex, mesh, allowLazyLoad: textureDirty);
+                            bool gpuTextureReady = EnsureMeshTextureLoaded(meshIndex, mesh, allowLazyLoad: textureDirty);
+                            if (!gpuTextureReady)
+                            {
+                                hasPendingTextureResources = true;
+                            }
+
                             cache.IsValid = false; // CPU cache path is bypassed for GPU-skinned mesh.
                             continue;
                         }
@@ -214,9 +220,21 @@ namespace Client.Main.Objects
                         float b = MathF.Min(colorB * meshLight.Z, 255f);
                         Color bodyColor = new Color((byte)r, (byte)g, (byte)b);
 
+                        bool textureReady = EnsureMeshTextureLoaded(
+                            meshIndex,
+                            mesh,
+                            allowLazyLoad: textureDirty);
+                        if (!textureReady)
+                        {
+                            hasPendingTextureResources = true;
+                        }
+
                         // Skip expensive buffer generation if color hasn't changed
                         bool colorChanged = cache.CachedBodyColor.PackedValue != bodyColor.PackedValue;
-                        if (!colorChanged && cache.IsValid && (_invalidatedBufferFlags & BUFFER_FLAG_ANIMATION) == 0)
+                        if (!colorChanged &&
+                            textureReady &&
+                            cache.IsValid &&
+                            (_invalidatedBufferFlags & BUFFER_FLAG_ANIMATION) == 0)
                             continue;
 
                         if (bones == null)
@@ -247,11 +265,6 @@ namespace Client.Main.Objects
                         cache.CachedBodyColor = bodyColor;
                         cache.LastUpdateFrame = currentFrame;
                         cache.IsValid = true;
-
-                        EnsureMeshTextureLoaded(
-                            meshIndex,
-                            mesh,
-                            allowLazyLoad: textureDirty);
                     }
                     catch (Exception exMesh)
                     {
@@ -259,7 +272,12 @@ namespace Client.Main.Objects
                     }
                 }
 
-                _invalidatedBufferFlags = 0; // Clear all flags
+                // Keep texture invalidation alive until every mesh has a resolved Texture2D.
+                // This prevents one-frame load races from leaving attachments (e.g. NPC wings)
+                // permanently invisible.
+                _invalidatedBufferFlags = hasPendingTextureResources
+                    ? BUFFER_FLAG_TEXTURE
+                    : 0;
             }
             catch (Exception ex)
             {
@@ -335,7 +353,7 @@ namespace Client.Main.Objects
             return true;
         }
 
-        private void EnsureMeshTextureLoaded(int meshIndex, BMDTextureMesh mesh, bool allowLazyLoad)
+        private bool EnsureMeshTextureLoaded(int meshIndex, BMDTextureMesh mesh, bool allowLazyLoad)
         {
             if (_boneTextures == null ||
                 _scriptTextures == null ||
@@ -346,7 +364,7 @@ namespace Client.Main.Objects
                 (uint)meshIndex >= (uint)_scriptTextures.Length ||
                 (uint)meshIndex >= (uint)_dataTextures.Length)
             {
-                return;
+                return false;
             }
 
             string texturePath = null;
@@ -366,7 +384,7 @@ namespace Client.Main.Objects
 
             if (string.IsNullOrEmpty(texturePath))
             {
-                return;
+                return false;
             }
 
             if (allowLazyLoad && _boneTextures[meshIndex] == null)
@@ -385,7 +403,7 @@ namespace Client.Main.Objects
             bool needsMetadataRefresh = allowLazyLoad || _scriptTextures[meshIndex] == null || _dataTextures[meshIndex] == null;
             if (!needsMetadataRefresh)
             {
-                return;
+                return _boneTextures[meshIndex] != null;
             }
 
             var script = TextureLoader.Instance.GetScript(texturePath);
@@ -407,6 +425,8 @@ namespace Client.Main.Objects
             {
                 _meshBlendByScript[meshIndex] = script?.Bright ?? false;
             }
+
+            return _boneTextures[meshIndex] != null;
         }
 
         private Matrix[] GetCachedBoneTransforms()

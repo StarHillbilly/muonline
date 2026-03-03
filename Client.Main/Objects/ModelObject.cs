@@ -39,10 +39,6 @@ namespace Client.Main.Objects
         private static readonly ArrayPool<Matrix> _matrixArrayPool = ArrayPool<Matrix>.Shared;
         private static readonly Dictionary<string, BlendState> _blendStateCache = new Dictionary<string, BlendState>();
 
-        // Cache for Environment.TickCount to reduce system calls
-        private static float _cachedTime = 0f;
-        private static int _lastTickCount = 0;
-
         // Cached common Vector3 instances to avoid allocations
         private static readonly Vector3 _ambientLightVector = new Vector3(0.8f, 0.8f, 0.8f);
         private static readonly Vector3 _redHighlight = new Vector3(1, 0, 0);
@@ -197,6 +193,7 @@ namespace Client.Main.Objects
         private double _lastAnimationUpdateTime = 0;
         private double _lastFrameTimeMs = 0; // To track timing in methods without GameTime
         private double _lastStrideAnimationBufferUpdateTimeMs = double.NegativeInfinity;
+        private float _drawShaderTimeSeconds = 0f;
 
         private readonly int _animationStrideOffset;
 
@@ -224,7 +221,7 @@ namespace Client.Main.Objects
                     _model = value;
                     // If the model changes after the object has already been loaded,
                     // we need to re-run the content loading logic to update buffers, textures, etc.
-                    if (Status != GameControlStatus.Disposed)
+                    if (Status is GameControlStatus.Ready or GameControlStatus.Error)
                     {
                         _ = LoadContent();
                     }
@@ -395,19 +392,25 @@ namespace Client.Main.Objects
                     texturePreloadTasks.Add(TextureLoader.Instance.Prepare(texturePath));
                 }
 
-                _boneTextures[meshIndex] = TextureLoader.Instance.GetTexture2D(texturePath);
-                _scriptTextures[meshIndex] = TextureLoader.Instance.GetScript(texturePath);
-                _dataTextures[meshIndex] = TextureLoader.Instance.Get(texturePath);
-
-                _meshIsRGBA[meshIndex] = _dataTextures[meshIndex]?.Components == 4;
-                _meshHiddenByScript[meshIndex] = _scriptTextures[meshIndex]?.HiddenMesh ?? false;
-                _meshBlendByScript[meshIndex] = _scriptTextures[meshIndex]?.Bright ?? false;
+                // Materialize Texture2D later in main-thread render/update path (SetDynamicBuffers).
+                _boneTextures[meshIndex] = null;
             }
 
             // Wait for all textures to be preloaded
             if (texturePreloadTasks.Count > 0)
             {
                 await Task.WhenAll(texturePreloadTasks);
+            }
+
+            for (int meshIndex = 0; meshIndex < meshCount; meshIndex++)
+            {
+                string texturePath = _meshTexturePath[meshIndex];
+                _scriptTextures[meshIndex] = TextureLoader.Instance.GetScript(texturePath);
+                _dataTextures[meshIndex] = TextureLoader.Instance.Get(texturePath);
+
+                _meshIsRGBA[meshIndex] = _dataTextures[meshIndex]?.Components == 4;
+                _meshHiddenByScript[meshIndex] = _scriptTextures[meshIndex]?.HiddenMesh ?? false;
+                _meshBlendByScript[meshIndex] = _scriptTextures[meshIndex]?.Bright ?? false;
             }
 
             _sortTextureHintDirty = true;
@@ -485,7 +488,9 @@ namespace Client.Main.Objects
                     if (!walker.IsMainWalker)
                     {
                         // Keep nearby animations smooth; only throttle when low-quality is active.
-                        desiredStride = walker.IsOneShotPlaying ? 1 : (LowQuality ? 4 : 1);
+                        // Attachments with animated material effects (e.g. item glow) must stay per-frame.
+                        bool forcePerFrameStride = HasRealtimeMaterialAnimation();
+                        desiredStride = (walker.IsOneShotPlaying || forcePerFrameStride) ? 1 : (LowQuality ? 4 : 1);
                     }
 
                     if (AnimationUpdateStride != desiredStride)
@@ -624,15 +629,23 @@ namespace Client.Main.Objects
             return false;
         }
 
-        private static float GetCachedTime()
+        private bool HasRealtimeMaterialAnimation()
         {
-            int currentTick = Environment.TickCount;
-            if (currentTick != _lastTickCount)
+            return Constants.ENABLE_ITEM_MATERIAL_SHADER &&
+                   (ItemLevel >= 7 || IsExcellentItem || IsAncientItem);
+        }
+
+        private void SetDrawShaderTimeSeconds(float timeSeconds)
+        {
+            if (!float.IsNaN(timeSeconds) && !float.IsInfinity(timeSeconds) && timeSeconds >= 0f)
             {
-                _lastTickCount = currentTick;
-                _cachedTime = currentTick * 0.001f;
+                _drawShaderTimeSeconds = timeSeconds;
             }
-            return _cachedTime;
+        }
+
+        private float GetShaderTimeSeconds()
+        {
+            return _drawShaderTimeSeconds;
         }
 
         public void SetAnimationUpdateStride(int stride)

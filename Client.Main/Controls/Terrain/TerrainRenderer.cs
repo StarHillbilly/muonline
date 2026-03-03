@@ -115,6 +115,7 @@ namespace Client.Main.Controls.Terrain
         public int DrawnTriangles { get; private set; }
         public int DrawnBlocks { get; private set; }
         public int DrawnCells { get; private set; }
+        public int LastUploadedDynamicLights { get; private set; }
         public bool IsGpuLightingActive => _useDynamicLightingShader;
         public bool IsDynamicLightingShaderAvailable => GraphicsManager.Instance.DynamicLightingEffect != null;
 
@@ -373,6 +374,7 @@ namespace Client.Main.Controls.Terrain
             DrawnTriangles = 0;
             DrawnBlocks = 0;
             DrawnCells = 0;
+            LastUploadedDynamicLights = 0;
 
             // Reset state tracking for new frame
             _lastBoundTexture = null;
@@ -649,13 +651,15 @@ namespace Client.Main.Controls.Terrain
             if (!Constants.ENABLE_DYNAMIC_LIGHTS)
             {
                 _dynamicLightUploader.Clear(effect);
+                LastUploadedDynamicLights = 0;
                 return;
             }
 
-            var activeLights = _lightManager.ActiveLights;
-            if (activeLights == null || activeLights.Count == 0)
+            var visibleLights = _lightManager.VisibleLights;
+            if (visibleLights == null || visibleLights.Count == 0)
             {
                 _dynamicLightUploader.Clear(effect);
+                LastUploadedDynamicLights = 0;
                 return;
             }
 
@@ -664,7 +668,7 @@ namespace Client.Main.Controls.Terrain
                 ? new Vector2(Camera.Instance.Target.X, Camera.Instance.Target.Y)
                 : Vector2.Zero;
 
-            _dynamicLightUploader.Upload(effect, activeLights, focusPos, maxLights);
+            LastUploadedDynamicLights = _dynamicLightUploader.Upload(effect, visibleLights, focusPos, maxLights);
         }
 
         private void RenderTerrainBlock(int xi, int yi, bool after, int lodStep, TerrainBlock block = null)
@@ -1147,7 +1151,7 @@ namespace Client.Main.Controls.Terrain
 
         private void ApplyCpuDynamicLight(ref Color baseLight, Vector3 pos)
         {
-            var dyn = _lightManager.EvaluateDynamicLight(new Vector2(pos.X, pos.Y));
+            var dyn = _lightManager.EvaluateVisibleDynamicLight(new Vector2(pos.X, pos.Y));
             if (dyn.LengthSquared() < 0.0001f)
                 return;
 

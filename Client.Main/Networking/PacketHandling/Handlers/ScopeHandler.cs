@@ -51,6 +51,7 @@ namespace Client.Main.Networking.PacketHandling.Handlers
         private static readonly ConcurrentQueue<NpcSpawnRequest> _npcSpawnQueue = new();
         private static readonly ConcurrentQueue<PlayerSpawnRequest> _playerSpawnQueue = new();
         private static readonly ConcurrentQueue<DroppedItemWorkItem> _droppedItemQueue = new();
+        private static readonly ConcurrentDictionary<ushort, int> _npcSpawnGenerations = new();
         private static int _npcSpawnsInFlight;
         private static int _playerSpawnWorkerRunning;
         private static int _droppedItemWorkerRunning;
@@ -115,6 +116,22 @@ namespace Client.Main.Networking.PacketHandling.Handlers
             return 0;
         }
 
+        private static int BumpNpcSpawnGeneration(ushort maskedId)
+        {
+            return _npcSpawnGenerations.AddOrUpdate(maskedId, 1, static (_, previous) => unchecked(previous + 1));
+        }
+
+        private static bool IsCurrentNpcSpawnGeneration(ushort maskedId, int generation)
+        {
+            return _npcSpawnGenerations.TryGetValue(maskedId, out int currentGeneration) &&
+                   currentGeneration == generation;
+        }
+
+        private static void InvalidateNpcSpawnGeneration(ushort maskedId)
+        {
+            _npcSpawnGenerations.AddOrUpdate(maskedId, 1, static (_, previous) => unchecked(previous + 1));
+        }
+
         /// <summary>
         /// Maps a server direction byte (0-7) to the client Direction enum using the inverse direction map.
         /// </summary>
@@ -127,6 +144,24 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 return (Client.Main.Models.Direction)clientDir;
 
             return (Client.Main.Models.Direction)serverDirection;
+        }
+
+        /// <summary>
+        /// Maps a client-facing direction (0-7) back to server-encoded direction.
+        /// Used for re-queueing pending spawns through the unified scope pipeline.
+        /// </summary>
+        private byte MapClientDirectionToServer(byte clientDirection)
+        {
+            if (clientDirection > 7)
+                return 0;
+
+            foreach (var kvp in _serverToClientDirMap)
+            {
+                if (kvp.Value == clientDirection)
+                    return kvp.Key;
+            }
+
+            return clientDirection;
         }
 
         private static void RecordHitPacket(ReadOnlySpan<byte> packetSpan)
@@ -170,6 +205,47 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 _pendingNpcsMonsters.Clear();
                 _pendingNpcMonsterIds.Clear();
                 return copy;
+            }
+        }
+
+        /// <summary>
+        /// Requeues pending NPC/monster descriptors into the normal spawn queue so all lifecycle checks
+        /// (generation, scope validity, deduplication) run through one path.
+        /// </summary>
+        internal static void EnqueuePendingNpcsMonsters(IReadOnlyList<NpcScopeObject> pending)
+        {
+            var handler = _activeInstance;
+            if (handler == null || pending == null || pending.Count == 0)
+                return;
+
+            ushort mapId = handler._characterState.MapId;
+            var world = MuGame.Instance?.ActiveScene?.World as WalkableWorldControl;
+
+            for (int i = 0; i < pending.Count; i++)
+            {
+                var npc = pending[i];
+                if (npc == null)
+                    continue;
+
+                ushort maskedId = (ushort)(npc.Id & 0x7FFF);
+                if (!handler._scopeManager.ScopeContains(maskedId))
+                    continue;
+
+                if (world != null && world.FindWalkerById(maskedId) != null)
+                    continue;
+
+                int spawnGeneration = BumpNpcSpawnGeneration(maskedId);
+                byte serverDirection = handler.MapClientDirectionToServer(npc.Direction);
+                _npcSpawnQueue.Enqueue(new NpcSpawnRequest(
+                    maskedId,
+                    npc.RawId,
+                    npc.PositionX,
+                    npc.PositionY,
+                    serverDirection,
+                    npc.TypeNumber,
+                    npc.Name,
+                    mapId,
+                    spawnGeneration));
             }
         }
 
@@ -462,8 +538,9 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 string name = NpcDatabase.GetNpcName(type);
 
                 _scopeManager.AddOrUpdateNpcInScope(maskedId, rawId, x, y, type, name);
+                int spawnGeneration = BumpNpcSpawnGeneration(maskedId);
 
-                _npcSpawnQueue.Enqueue(new NpcSpawnRequest(maskedId, rawId, x, y, direction, type, name, currentMapId));
+                _npcSpawnQueue.Enqueue(new NpcSpawnRequest(maskedId, rawId, x, y, direction, type, name, currentMapId, spawnGeneration));
             }
         }
 
@@ -504,6 +581,12 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 return;
             }
 
+            if (!IsCurrentNpcSpawnGeneration(request.MaskedId, request.SpawnGeneration))
+            {
+                _logger.LogDebug("Skipping stale NPC/Monster spawn {SpawnId:X4} (generation {Generation}).", request.MaskedId, request.SpawnGeneration);
+                return;
+            }
+
             Interlocked.Increment(ref _npcSpawnsInFlight);
 
             _ = ProcessNpcSpawnAsync(request).ContinueWith(t =>
@@ -525,11 +608,23 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 return Task.CompletedTask;
             }
 
-            return ProcessNpcSpawnAsync(request.MaskedId, request.RawId, request.X, request.Y, request.Direction, request.Type, request.Name);
+            if (!IsCurrentNpcSpawnGeneration(request.MaskedId, request.SpawnGeneration))
+            {
+                _logger.LogDebug("Dropping stale NPC/Monster spawn {SpawnId:X4} (generation {Generation}) before load.", request.MaskedId, request.SpawnGeneration);
+                return Task.CompletedTask;
+            }
+
+            return ProcessNpcSpawnAsync(request.MaskedId, request.RawId, request.X, request.Y, request.Direction, request.Type, request.Name, request.SpawnGeneration);
         }
 
-        private async Task ProcessNpcSpawnAsync(ushort maskedId, ushort rawId, byte x, byte y, byte direction, ushort type, string name)
+        private async Task ProcessNpcSpawnAsync(ushort maskedId, ushort rawId, byte x, byte y, byte direction, ushort type, string name, int spawnGeneration)
         {
+            if (!IsCurrentNpcSpawnGeneration(maskedId, spawnGeneration))
+            {
+                _logger.LogDebug("Skipping NPC/Monster spawn {SpawnId:X4} due to outdated generation {Generation}.", maskedId, spawnGeneration);
+                return;
+            }
+
             if (MuGame.Instance.ActiveScene?.World is not WalkableWorldControl worldRef || worldRef.Status != GameControlStatus.Ready)
             {
                 lock (_pendingNpcsMonsters)
@@ -581,11 +676,23 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 return;
             }
 
+            if (!IsCurrentNpcSpawnGeneration(maskedId, spawnGeneration) || !_scopeManager.ScopeContains(maskedId))
+            {
+                MuGame.ScheduleOnMainThread(() => obj.Dispose());
+                return;
+            }
+
             // Add to world on main thread
             MuGame.ScheduleOnMainThread(() =>
             {
                 // Double-check world is still valid and object doesn't already exist
                 if (MuGame.Instance.ActiveScene?.World != worldRef || worldRef.Status != GameControlStatus.Ready)
+                {
+                    obj.Dispose();
+                    return;
+                }
+
+                if (!IsCurrentNpcSpawnGeneration(maskedId, spawnGeneration) || !_scopeManager.ScopeContains(maskedId))
                 {
                     obj.Dispose();
                     return;
@@ -641,7 +748,7 @@ namespace Client.Main.Networking.PacketHandling.Handlers
 
         private readonly struct NpcSpawnRequest
         {
-            public NpcSpawnRequest(ushort maskedId, ushort rawId, byte x, byte y, byte direction, ushort type, string name, ushort mapId)
+            public NpcSpawnRequest(ushort maskedId, ushort rawId, byte x, byte y, byte direction, ushort type, string name, ushort mapId, int spawnGeneration)
             {
                 MaskedId = maskedId;
                 RawId = rawId;
@@ -651,6 +758,7 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 Type = type;
                 Name = name;
                 MapId = mapId;
+                SpawnGeneration = spawnGeneration;
             }
 
             public ushort MaskedId { get; }
@@ -661,6 +769,7 @@ namespace Client.Main.Networking.PacketHandling.Handlers
             public ushort Type { get; }
             public string Name { get; }
             public ushort MapId { get; }
+            public int SpawnGeneration { get; }
         }
 
         private readonly struct PlayerSpawnRequest
@@ -1401,6 +1510,7 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                 }
 
                 objectsToRemove.Add(masked);
+                InvalidateNpcSpawnGeneration(masked);
                 _scopeManager.RemoveObjectFromScope(masked);
             }
 

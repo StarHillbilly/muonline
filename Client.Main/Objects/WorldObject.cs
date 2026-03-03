@@ -192,10 +192,7 @@ namespace Client.Main.Objects
                 for (var i = 0; i < snapshot.Count; i++)
                     tasks[i + 1] = snapshot[i].Load();
 
-                await Task.WhenAny(
-                    Task.WhenAll(tasks),
-                    Task.Delay(5000)
-                );
+                await Task.WhenAll(tasks);
 
                 RecalculateWorldPosition();
                 UpdateWorldBoundingBox();

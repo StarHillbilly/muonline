@@ -673,10 +673,7 @@ namespace Client.Main.Objects.Player
             var wingsDef = GetItemDef(InventoryConstants.WingsSlot);
             if (wingsDef != null && !string.IsNullOrEmpty(wingsDef.TexturePath))
             {
-                EquippedWings.Hidden = false;
-                EquippedWings.Type = 0;
-                EquippedWings.ItemIndex = (short)wingsDef.Id;
-                EquippedWings.LinkParentAnimation = false;
+                ShowEquippedWings((short)wingsDef.Id);
             }
             else
             {
@@ -687,23 +684,16 @@ namespace Client.Main.Objects.Player
                     var mappedIndex = TryMapWingAppearanceToItemIndex(Appearance.WingInfo, CharacterClass);
                     if (mappedIndex.HasValue)
                     {
-                        EquippedWings.Hidden = false;
-                        EquippedWings.Type = 0;
-                        EquippedWings.ItemIndex = mappedIndex.Value;
-                        EquippedWings.LinkParentAnimation = false;
+                        ShowEquippedWings(mappedIndex.Value);
                     }
                     else
                     {
-                        EquippedWings.Hidden = true;
-                        EquippedWings.Type = 0;
-                        EquippedWings.ItemIndex = -1;
+                        HideEquippedWings();
                     }
                 }
                 else
                 {
-                    EquippedWings.Hidden = true;
-                    EquippedWings.Type = 0;
-                    EquippedWings.ItemIndex = -1;
+                    HideEquippedWings();
                 }
             }
 
@@ -848,23 +838,16 @@ namespace Client.Main.Objects.Player
                 var mappedIndex = TryMapWingAppearanceToItemIndex(Appearance.WingInfo, CharacterClass);
                 if (mappedIndex.HasValue)
                 {
-                    EquippedWings.Hidden = false;
-                    EquippedWings.Type = 0;
-                    EquippedWings.ItemIndex = mappedIndex.Value;
-                    EquippedWings.LinkParentAnimation = false;
+                    ShowEquippedWings(mappedIndex.Value);
                 }
                 else
                 {
-                    EquippedWings.Hidden = true;
-                    EquippedWings.Type = 0;
-                    EquippedWings.ItemIndex = -1;
+                    HideEquippedWings();
                 }
             }
             else
             {
-                EquippedWings.Hidden = true;
-                EquippedWings.Type = 0;
-                EquippedWings.ItemIndex = -1;
+                HideEquippedWings();
             }
             // Weapons
             // This requires more sophisticated logic to determine the exact weapon model
@@ -1053,13 +1036,11 @@ namespace Client.Main.Objects.Player
             // Wings
             if (appearanceConfig.WingInfo.ItemIndex >= 0)
             {
-                EquippedWings.ItemIndex = appearanceConfig.WingInfo.ItemIndex;
-                EquippedWings.Hidden = false;
-                EquippedWings.LinkParentAnimation = false;
+                ShowEquippedWings(appearanceConfig.WingInfo.ItemIndex);
             }
             else
             {
-                EquippedWings.Hidden = true;
+                HideEquippedWings();
             }
 
             if (appearanceConfig.RidingVehicle >= 0)
@@ -3986,9 +3967,7 @@ namespace Client.Main.Objects.Player
                     break;
 
                 case InventoryConstants.WingsSlot:
-                    EquippedWings.Hidden = true;
-                    EquippedWings.Type = 0;
-                    EquippedWings.ItemIndex = -1;
+                    HideEquippedWings();
                     break;
 
                 default:
@@ -4044,20 +4023,34 @@ namespace Client.Main.Objects.Player
             }
         }
 
+        private void ShowEquippedWings(short wingItemIndex)
+        {
+            if (EquippedWings == null)
+                return;
+
+            EquippedWings.LinkParentAnimation = false;
+            EquippedWings.Hidden = false;
+            EquippedWings.ItemIndex = wingItemIndex;
+        }
+
+        private void HideEquippedWings()
+        {
+            if (EquippedWings == null)
+                return;
+
+            EquippedWings.Hidden = true;
+            EquippedWings.ItemIndex = -1;
+        }
+
         private Task UpdateWingsSlotAsync(EquipmentSlotData equipmentData)
         {
             if (equipmentData.ItemGroup == 12)
             {
-                EquippedWings.Hidden = false;
-                EquippedWings.Type = 0;
-                EquippedWings.ItemIndex = (short)equipmentData.ItemNumber;
-                EquippedWings.LinkParentAnimation = false;
+                ShowEquippedWings((short)equipmentData.ItemNumber);
             }
             else
             {
-                EquippedWings.Hidden = true;
-                EquippedWings.Type = 0;
-                EquippedWings.ItemIndex = -1;
+                HideEquippedWings();
             }
 
             return Task.CompletedTask;

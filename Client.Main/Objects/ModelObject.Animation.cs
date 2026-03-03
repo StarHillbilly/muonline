@@ -187,8 +187,10 @@ namespace Client.Main.Objects
 
             // Create animation state for comparison - only for animated objects
             LocalAnimationState currentAnimState = default;
-            bool shouldCheckCache = !LinkParentAnimation && ParentBoneLink < 0 &&
-                                   action.NumAnimationKeys > 1; // Only cache animated objects
+            bool shouldCheckCache = !RequiresPerFrameAnimation &&
+                                   !LinkParentAnimation &&
+                                   ParentBoneLink < 0 &&
+                                   action.NumAnimationKeys > 1; // Only cache non-critical animated objects
 
             if (shouldCheckCache)
             {

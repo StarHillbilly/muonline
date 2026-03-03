@@ -103,8 +103,10 @@ namespace Client.Main.Controls.UI
                     bool terrainGpu = walkableWorld.Terrain?.IsGpuTerrainLighting == true;
                     bool shaderAvailable = walkableWorld.Terrain?.IsDynamicLightingShaderAvailable == true;
                     bool objectsGpu = Constants.ENABLE_DYNAMIC_LIGHTING_SHADER && GraphicsManager.Instance.DynamicLightingEffect != null;
-                    int registeredDynamicLights = walkableWorld.Terrain?.DynamicLights?.Count ?? 0;
-                    int activeDynamicLights = walkableWorld.Terrain?.ActiveLights?.Count ?? 0;
+                    int registeredDynamicLights = walkableWorld.Terrain?.LastFrameRegisteredDynamicLights ?? 0;
+                    int activeDynamicLights = walkableWorld.Terrain?.LastFrameActiveDynamicLights ?? 0;
+                    int visibleDynamicLights = walkableWorld.Terrain?.LastFrameVisibleDynamicLights ?? 0;
+                    int uploadedTerrainLights = walkableWorld.Terrain?.LastUploadedDynamicLights ?? 0;
                     int prunedDynamicLights = walkableWorld.Terrain?.DynamicLightsOrphansPruned ?? 0;
                     int rejectedDynamicAdds = walkableWorld.Terrain?.DynamicLightsDuplicateAddsRejected ?? 0;
                     _sb.Clear()
@@ -117,6 +119,10 @@ namespace Client.Main.Controls.UI
                       .Append(registeredDynamicLights)
                       .Append(" Act:")
                       .Append(activeDynamicLights)
+                      .Append(" Vis:")
+                      .Append(visibleDynamicLights)
+                      .Append(" UpT:")
+                      .Append(uploadedTerrainLights)
                       .Append(" Prn:")
                       .Append(prunedDynamicLights)
                       .Append(" Dup:")

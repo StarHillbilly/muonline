@@ -465,8 +465,8 @@ namespace Client.Main.Objects
                 return;
             }
 
-            var activeLights = terrain.ActiveLights;
-            if (activeLights == null || activeLights.Count == 0)
+            var visibleLights = terrain.VisibleLights;
+            if (visibleLights == null || visibleLights.Count == 0)
             {
                 _staticInstancingLightUploader.Clear(effect);
                 return;
@@ -477,7 +477,7 @@ namespace Client.Main.Objects
                 ? new Vector2(Camera.Instance.Target.X, Camera.Instance.Target.Y)
                 : Vector2.Zero;
 
-            _staticInstancingLightUploader.Upload(effect, activeLights, focus, maxLights);
+            _staticInstancingLightUploader.Upload(effect, visibleLights, focus, maxLights);
         }
     }
 }

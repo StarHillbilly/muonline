@@ -106,8 +106,8 @@ namespace Client.Main.Objects
             }
 
             var terrain = World?.Terrain;
-            var activeLights = terrain?.ActiveLights;
-            if (activeLights == null || activeLights.Count == 0)
+            var visibleLights = terrain?.VisibleLights;
+            if (visibleLights == null || visibleLights.Count == 0)
             {
                 _dynamicLightUploader.Clear(effect);
                 return;
@@ -115,7 +115,7 @@ namespace Client.Main.Objects
 
             int maxLights = ResolveDynamicObjectLightBudget(worldTranslation);
             var focus = new Vector2(worldTranslation.X, worldTranslation.Y);
-            _dynamicLightUploader.Upload(effect, activeLights, focus, maxLights);
+            _dynamicLightUploader.Upload(effect, visibleLights, focus, maxLights);
         }
 
         private int ResolveDynamicObjectLightBudget(Vector3 worldTranslation)

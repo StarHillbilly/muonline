@@ -254,6 +254,8 @@ namespace Client.Main.Objects
         {
             if (!Visible || _boneIndexBuffers == null) return;
 
+            SetDrawShaderTimeSeconds((float)gameTime.TotalGameTime.TotalSeconds);
+
             var gd = GraphicsDevice;
             var prevCull = gd.RasterizerState;
             gd.RasterizerState = _cullClockwise;
@@ -730,7 +732,7 @@ namespace Client.Main.Objects
                         itemOptions |= 0x10;
 
                     effect.Parameters["ItemOptions"]?.SetValue(itemOptions);
-                    effect.Parameters["Time"]?.SetValue(GetCachedTime());
+                    effect.Parameters["Time"]?.SetValue(GetShaderTimeSeconds());
                     effect.Parameters["IsAncient"]?.SetValue(IsAncientItem);
                     effect.Parameters["IsExcellent"]?.SetValue(IsExcellentItem);
                     effect.Parameters["Alpha"]?.SetValue(TotalAlpha);
@@ -836,7 +838,7 @@ namespace Client.Main.Objects
                     effect.Parameters["GlowIntensity"]?.SetValue(GlowIntensity);
                     effect.Parameters["EnableGlow"]?.SetValue(GlowIntensity > 0.0f && !SimpleColorMode);
                     effect.Parameters["SimpleColorMode"]?.SetValue(SimpleColorMode);
-                    effect.Parameters["Time"]?.SetValue(GetCachedTime());
+                    effect.Parameters["Time"]?.SetValue(GetShaderTimeSeconds());
                     effect.Parameters["Alpha"]?.SetValue(TotalAlpha);
 
                     gd.SetVertexBuffer(vertexBuffer);
@@ -1048,6 +1050,8 @@ namespace Client.Main.Objects
         public override void DrawAfter(GameTime gameTime)
         {
             if (!Visible) return;
+
+            SetDrawShaderTimeSeconds((float)gameTime.TotalGameTime.TotalSeconds);
 
             var gd = GraphicsDevice;
             var prevCull = gd.RasterizerState;

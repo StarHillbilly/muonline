@@ -21,16 +21,23 @@ namespace Client.Main.Controls.Terrain
         private readonly HashSet<DynamicLight> _dynamicLightSet = new();
         private readonly Dictionary<WorldObject, HashSet<DynamicLight>> _lightsByOwner = new();
         private readonly List<DynamicLightSnapshot> _activeLights = new(32);
+        private readonly List<DynamicLightSnapshot> _visibleLights = new(32);
 
         private readonly TerrainData _data;
         private readonly GameControl _parent;
         private int _activeLightsVersion;
+        private int _visibleLightsVersion;
 
         public IReadOnlyList<DynamicLight> DynamicLights => _dynamicLights;
         public IReadOnlyList<DynamicLightSnapshot> ActiveLights => _activeLights;
+        public IReadOnlyList<DynamicLightSnapshot> VisibleLights => _visibleLights;
         public int ActiveLightsVersion => _activeLightsVersion;
+        public int VisibleLightsVersion => _visibleLightsVersion;
         public int OrphanLightsPrunedCount { get; private set; }
         public int DuplicateAddsRejectedCount { get; private set; }
+        public int LastFrameRegisteredCount { get; private set; }
+        public int LastFrameActiveCount { get; private set; }
+        public int LastFrameVisibleCount { get; private set; }
 
         public TerrainLightManager(TerrainData data, GameControl parent)
         {
@@ -132,7 +139,12 @@ namespace Client.Main.Controls.Terrain
             SweepInvalidLights(world);
 
             _activeLightsVersion++;
+            _visibleLightsVersion++;
             _activeLights.Clear();
+            _visibleLights.Clear();
+            LastFrameRegisteredCount = _dynamicLights.Count;
+            LastFrameActiveCount = 0;
+            LastFrameVisibleCount = 0;
 
             if (!Constants.ENABLE_DYNAMIC_LIGHTS || world == null || _dynamicLights.Count == 0)
                 return;
@@ -168,6 +180,28 @@ namespace Client.Main.Controls.Terrain
 
                 _activeLights.Add(new DynamicLightSnapshot(light.Position, light.Color, light.Radius, light.Intensity));
             }
+
+            LastFrameActiveCount = _activeLights.Count;
+            if (_activeLights.Count == 0)
+                return;
+
+            var camera = Camera.Instance;
+            var frustum = camera?.Frustum;
+            if (frustum == null)
+            {
+                _visibleLights.AddRange(_activeLights);
+                LastFrameVisibleCount = _visibleLights.Count;
+                return;
+            }
+
+            for (int i = 0; i < _activeLights.Count; i++)
+            {
+                var snapshot = _activeLights[i];
+                if (IsLightVisibleInFrustum(frustum, snapshot))
+                    _visibleLights.Add(snapshot);
+            }
+
+            LastFrameVisibleCount = _visibleLights.Count;
         }
 
         public Vector3 EvaluateDynamicLight(Vector2 position)
@@ -175,15 +209,28 @@ namespace Client.Main.Controls.Terrain
             if (!Constants.ENABLE_DYNAMIC_LIGHTS || _activeLights.Count == 0)
                 return Vector3.Zero;
 
+            return EvaluateSnapshotLights(_activeLights, position);
+        }
+
+        public Vector3 EvaluateVisibleDynamicLight(Vector2 position)
+        {
+            if (!Constants.ENABLE_DYNAMIC_LIGHTS || _visibleLights.Count == 0)
+                return Vector3.Zero;
+
+            return EvaluateSnapshotLights(_visibleLights, position);
+        }
+
+        private static Vector3 EvaluateSnapshotLights(IReadOnlyList<DynamicLightSnapshot> lights, Vector2 position)
+        {
             Vector3 result = Vector3.Zero;
             Vector3 negativeResult = Vector3.Zero;
             bool hasNegative = false;
 
             const float cpuLightScale = 150f;
 
-            for (int i = 0; i < _activeLights.Count; i++)
+            for (int i = 0; i < lights.Count; i++)
             {
-                var light = _activeLights[i];
+                var light = lights[i];
                 float radiusSq = light.Radius * light.Radius;
                 if (radiusSq <= 0.0001f)
                     continue;
@@ -219,6 +266,16 @@ namespace Client.Main.Controls.Terrain
                 result += negativeResult;
 
             return result;
+        }
+
+        private static bool IsLightVisibleInFrustum(BoundingFrustum frustum, in DynamicLightSnapshot light)
+        {
+            float baseRadius = Math.Max(light.Radius, 0.0001f);
+            float guardBand = Math.Max(64f, baseRadius * 0.20f);
+            float sphereRadius = baseRadius + guardBand;
+
+            var sphere = new BoundingSphere(light.Position, sphereRadius);
+            return frustum.Contains(sphere) != ContainmentType.Disjoint;
         }
 
         private bool SweepInvalidLights(WorldControl world)
