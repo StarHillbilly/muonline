@@ -48,6 +48,11 @@ namespace Client.Main.Controls.UI.Game.Hud
         private static readonly Color ExpColorDark = new(110, 88, 35);
         private static readonly Color ExpGlow = new(255, 210, 100, 35);
 
+        private static readonly Color CompanionColorGood = new(92, 188, 122);
+        private static readonly Color CompanionColorWarn = new(234, 186, 78);
+        private static readonly Color CompanionColorDanger = new(220, 88, 88);
+        private static readonly HashSet<int> HelperLifeIds = new() { 0, 1, 2, 3, 4 };
+
         // ──────────────── State ────────────────
         private readonly CharacterState _state;
         private readonly SkillSelectionPanel _skillPanel;
@@ -71,6 +76,7 @@ namespace Client.Main.Controls.UI.Game.Hud
         private float _slotFontScale;
         private float _btnFontScale;
         private float _expFontScale;
+        private readonly CompanionLifeInfo?[] _companionInfos = new CompanionLifeInfo?[2];
 
         // Skill slots: 0-2 = potion (Q/W/E), 3-12 = skills (1-0)
         private const int SlotCount = 13;
@@ -109,6 +115,8 @@ namespace Client.Main.Controls.UI.Game.Hud
             "Q", "W", "E",
             "1", "2", "3", "4", "5", "6", "7", "8", "9", "0"
         };
+
+        private readonly record struct CompanionLifeInfo(string Name, int Current, int Maximum, Color FillColor);
 
         public SkillEntryState? SelectedSkill => _slotSkills[_activeSkillSlot];
 
@@ -158,6 +166,7 @@ namespace Client.Main.Controls.UI.Game.Hud
             _displaySdPct = MathHelper.Lerp(_displaySdPct, _targetSdPct, LerpSpeed * dt);
             _displayAgPct = MathHelper.Lerp(_displayAgPct, _targetAgPct, LerpSpeed * dt);
 
+            RefreshCompanionLifeInfos();
             HandleKeyboard();
             HandleMouseHover();
             HandlePotionPickerClick();
@@ -195,6 +204,7 @@ namespace Client.Main.Controls.UI.Game.Hud
                     return;
 
                 DrawPanelBackground(spriteBatch, pixel);
+                DrawCompanionLifeBars(spriteBatch, pixel);
 
                 // Left bars: HP + SD (next to quick slots)
                 DrawResourceBar(spriteBatch, pixel, _hpBarRect, _displayHpPct,
@@ -568,6 +578,192 @@ namespace Client.Main.Controls.UI.Game.Hud
             Y = panelY;
             ControlSize = new Point(vw, panelH + expH);
             ViewSize = ControlSize;
+        }
+
+        private void RefreshCompanionLifeInfos()
+        {
+            _companionInfos[0] = null;
+            _companionInfos[1] = null;
+
+            var items = _state.GetInventoryItems();
+            int writeIndex = 0;
+
+            if (TryGetHelperLifeInfo(items, out var helper))
+            {
+                _companionInfos[writeIndex++] = helper;
+            }
+
+            if (writeIndex < _companionInfos.Length && TryGetDarkRavenLifeInfo(items, out var raven))
+            {
+                _companionInfos[writeIndex] = raven;
+            }
+        }
+
+        private static bool TryGetHelperLifeInfo(IReadOnlyDictionary<byte, byte[]> items, out CompanionLifeInfo info)
+        {
+            info = default;
+
+            const byte helperSlot = 8;
+            if (!items.TryGetValue(helperSlot, out var helperData) || helperData == null || helperData.Length == 0)
+            {
+                return false;
+            }
+
+            var definition = ItemDatabase.GetItemDefinition(helperData);
+            if (definition == null || definition.Group != 13 || !HelperLifeIds.Contains(definition.Id))
+            {
+                return false;
+            }
+
+            int currentLife = ItemDatabase.GetItemDurability(helperData);
+            const int maxLife = 255;
+            info = new CompanionLifeInfo(
+                GetCompanionName(definition.Id, definition.Name),
+                currentLife,
+                maxLife,
+                ResolveCompanionFillColor(currentLife, maxLife));
+            return true;
+        }
+
+        private static bool TryGetDarkRavenLifeInfo(IReadOnlyDictionary<byte, byte[]> items, out CompanionLifeInfo info)
+        {
+            info = default;
+
+            // Reference client reads Dark Raven life from weapon-left slot.
+            // Keep a fallback check on weapon-right for server slot layout variations.
+            Span<byte> candidateSlots = stackalloc byte[] { 1, 0 };
+
+            for (int i = 0; i < candidateSlots.Length; i++)
+            {
+                byte slot = candidateSlots[i];
+                if (!items.TryGetValue(slot, out var itemData) || itemData == null || itemData.Length == 0)
+                {
+                    continue;
+                }
+
+                var definition = ItemDatabase.GetItemDefinition(itemData);
+                if (definition == null || definition.Group != 13 || definition.Id != 5)
+                {
+                    continue;
+                }
+
+                int currentLife = ItemDatabase.GetItemDurability(itemData);
+                const int maxLife = 255;
+                info = new CompanionLifeInfo(
+                    GetCompanionName(definition.Id, definition.Name),
+                    currentLife,
+                    maxLife,
+                    ResolveCompanionFillColor(currentLife, maxLife));
+                return true;
+            }
+
+            return false;
+        }
+
+        private static string GetCompanionName(int itemId, string? defaultName)
+        {
+            return itemId switch
+            {
+                0 => "Guardian Angel",
+                1 => "Imp",
+                2 => "Uniria",
+                3 => "Dinorant",
+                4 => "Dark Horse",
+                5 => "Dark Raven",
+                _ => string.IsNullOrWhiteSpace(defaultName) ? "Companion" : defaultName
+            };
+        }
+
+        private static Color ResolveCompanionFillColor(int current, int maximum)
+        {
+            if (maximum <= 0)
+            {
+                return CompanionColorDanger;
+            }
+
+            float ratio = MathHelper.Clamp(current / (float)maximum, 0f, 1f);
+            if (ratio <= 0.2f)
+            {
+                return CompanionColorDanger;
+            }
+
+            if (ratio <= 0.5f)
+            {
+                return CompanionColorWarn;
+            }
+
+            return CompanionColorGood;
+        }
+
+        private void DrawCompanionLifeBars(SpriteBatch sb, Texture2D pixel)
+        {
+            if (_font == null)
+            {
+                return;
+            }
+
+            var infos = new CompanionLifeInfo[2];
+            int count = 0;
+            for (int i = 0; i < _companionInfos.Length; i++)
+            {
+                if (_companionInfos[i].HasValue)
+                {
+                    infos[count++] = _companionInfos[i]!.Value;
+                }
+            }
+
+            if (count == 0)
+            {
+                return;
+            }
+
+            int barHeight = 13;
+            int barGap = 6;
+            int barWidth = Math.Clamp((int)(_panelRect.Width * 0.12f), 120, 156);
+            int totalWidth = (count * barWidth) + ((count - 1) * barGap);
+            int startX = _panelRect.Center.X - (totalWidth / 2);
+            int y = _panelRect.Y + 4;
+
+            for (int i = 0; i < count; i++)
+            {
+                var rect = new Rectangle(startX + i * (barWidth + barGap), y, barWidth, barHeight);
+                DrawCompanionLifeBar(sb, pixel, rect, infos[i]);
+            }
+        }
+
+        private void DrawCompanionLifeBar(SpriteBatch sb, Texture2D pixel, Rectangle rect, CompanionLifeInfo info)
+        {
+            sb.Draw(pixel, rect, ModernHudTheme.BorderOuter);
+
+            var track = new Rectangle(rect.X + 1, rect.Y + 1, Math.Max(1, rect.Width - 2), Math.Max(1, rect.Height - 2));
+            UiDrawHelper.DrawVerticalGradient(sb, track,
+                new Color(18, 20, 28, 242),
+                new Color(8, 10, 14, 252));
+
+            float lifeRatio = info.Maximum > 0
+                ? MathHelper.Clamp(info.Current / (float)info.Maximum, 0f, 1f)
+                : 0f;
+            int fillWidth = (int)(track.Width * lifeRatio);
+            if (fillWidth > 0)
+            {
+                var fillRect = new Rectangle(track.X, track.Y, fillWidth, track.Height);
+                UiDrawHelper.DrawHorizontalGradient(sb, fillRect,
+                    Color.Lerp(info.FillColor * 0.55f, ModernHudTheme.BgDark, 0.45f),
+                    info.FillColor);
+                sb.Draw(pixel, new Rectangle(fillRect.X, fillRect.Y, fillRect.Width, 1), info.FillColor * 0.65f);
+            }
+
+            string text = $"{info.Name} {info.Current}/{info.Maximum}";
+            float scale = 0.32f;
+            Vector2 size = _font!.MeasureString(text) * scale;
+            Vector2 textPos = new(
+                rect.X + (rect.Width - size.X) * 0.5f,
+                rect.Y + (rect.Height - size.Y) * 0.5f);
+
+            sb.DrawString(_font, text, textPos + Vector2.One,
+                Color.Black * 0.8f, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawString(_font, text, textPos,
+                ModernHudTheme.TextWhite, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
         }
 
         // ════════════════════════════ Drawing ════════════════════════════
