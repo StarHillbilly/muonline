@@ -7,6 +7,7 @@ using Client.Main.Objects.Wings;
 using Microsoft.Xna.Framework;
 using System;
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace Client.Main.Objects
@@ -199,6 +200,7 @@ namespace Client.Main.Objects
             {
                 // Reset animation cache for invalid models
                 _animationStateValid = false;
+                _animationSampleValid = false;
                 return;
             }
 
@@ -207,17 +209,28 @@ namespace Client.Main.Objects
             {
                 _animationStateValid = true;
                 _lastAnimationState = default;
+                _animationSampleActionIndex = actionIdx;
+                _animationSampleFrame0 = frame0;
+                _animationSampleFrame1 = frame1;
+                _animationSampleInterpolationBucket = QuantizeAnimationInterpolation(t);
+                _animationSampleValid = true;
                 return;
             }
 
             if (Model.Actions == null || Model.Actions.Length == 0)
             {
                 _animationStateValid = false;
+                _animationSampleValid = false;
                 return;
             }
 
             actionIdx = Math.Clamp(actionIdx, 0, Model.Actions.Length - 1);
             var action = Model.Actions[actionIdx];
+            _animationSampleActionIndex = actionIdx;
+            _animationSampleFrame0 = frame0;
+            _animationSampleFrame1 = frame1;
+            _animationSampleInterpolationBucket = QuantizeAnimationInterpolation(t);
+            _animationSampleValid = true;
 
             // Create animation state for comparison - only for animated objects
             LocalAnimationState currentAnimState = default;
@@ -386,6 +399,12 @@ namespace Client.Main.Objects
                 // clearArray: false because we don't need to zero out Matrix structs (performance)
                 _matrixArrayPool.Return(tempBoneTransforms, clearArray: false);
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int QuantizeAnimationInterpolation(float t)
+        {
+            return (int)MathHelper.Clamp(MathF.Round(t * 255f), 0f, 255f);
         }
 
         /// <summary>

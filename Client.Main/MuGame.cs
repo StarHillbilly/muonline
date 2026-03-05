@@ -1218,6 +1218,38 @@ namespace Client.Main
             }
         }
 
+        public static void PersistMonsterShadowMode(bool forceMonsterMeshShadows)
+        {
+            var logger = AppLoggerFactory?.CreateLogger<MuGame>();
+            try
+            {
+                Directory.CreateDirectory(ConfigDirectory ?? AppContext.BaseDirectory);
+
+                JsonObject root = LoadLocalSettings(logger);
+                if (root["MuOnlineSettings"] is not JsonObject muSettings)
+                {
+                    muSettings = new JsonObject();
+                    root["MuOnlineSettings"] = muSettings;
+                }
+
+                if (muSettings["Graphics"] is not JsonObject graphics)
+                {
+                    graphics = new JsonObject();
+                    muSettings["Graphics"] = graphics;
+                }
+
+                graphics["ForceMonsterMeshShadows"] = forceMonsterMeshShadows;
+
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                File.WriteAllText(LocalSettingsPath, root.ToJsonString(options));
+                logger?.LogInformation("Saved monster shadow mode to {Path}", LocalSettingsPath);
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Failed to persist monster shadow mode to disk.");
+            }
+        }
+
         private static JsonObject LoadLocalSettings(ILogger logger)
         {
             if (!File.Exists(LocalSettingsPath))

@@ -336,6 +336,7 @@ namespace Client.Main.Objects
                 // Object-level alpha is constant; set once for the pass
                 if (effect != null && effect.Alpha != TotalAlpha)
                     effect.Alpha = TotalAlpha;
+                bool drewBlobShadow = false;
 
                 foreach (var kvp in _meshGroups)
                 {
@@ -372,7 +373,20 @@ namespace Client.Main.Objects
 
                     // Object-level shadow and highlight passes
                     if (doShadow && !useShadowMap)
-                        DrawMeshesShadow(meshIndices, shadowMatrix, view, projection, shadowOpacity);
+                    {
+                        if (ShouldUseBlobShadowForCurrentPass())
+                        {
+                            if (!drewBlobShadow)
+                            {
+                                DrawBlobShadow(view, projection, shadowMatrix, shadowOpacity);
+                                drewBlobShadow = true;
+                            }
+                        }
+                        else
+                        {
+                            DrawMeshesShadow(meshIndices, shadowMatrix, view, projection, shadowOpacity);
+                        }
+                    }
                     if (highlightAllowed)
                         DrawMeshesHighlight(meshIndices, highlightMatrix, highlightColor);
 
@@ -485,6 +499,21 @@ namespace Client.Main.Objects
         {
             for (int n = 0; n < meshIndices.Count; n++)
                 DrawShadowMesh(meshIndices[n], view, projection, shadowMatrix, shadowOpacity);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool ShouldUseBlobShadowForCurrentPass()
+        {
+            if (this is not MonsterObject)
+                return false;
+
+            if (MuGame.AppSettings?.Graphics?.ForceMonsterMeshShadows == true)
+                return false;
+
+            if (GraphicsQualityManager.ActivePreset == GraphicsQualityPreset.High)
+                return false;
+
+            return LowQuality || Constants.ENABLE_GPU_SKINNING || Constants.OPTIMIZE_FOR_INTEGRATED_GPU;
         }
 
         private void DrawMeshesHighlight(List<int> meshIndices, Matrix highlightMatrix, Vector3 highlightColor)

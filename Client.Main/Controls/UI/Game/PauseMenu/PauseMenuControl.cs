@@ -874,6 +874,17 @@ namespace Client.Main.Controls.UI.Game.PauseMenu
                         OnShadowSettingChanged();
                     }, ref currentY, OptionRowHeight);
 
+                    AddOption("Force Monster Mesh Shadows", () => MuGame.AppSettings?.Graphics?.ForceMonsterMeshShadows == true, value =>
+                    {
+                        var graphicsSettings = MuGame.AppSettings?.Graphics;
+                        if (graphicsSettings == null)
+                            return;
+
+                        graphicsSettings.ForceMonsterMeshShadows = value;
+                        MuGame.PersistMonsterShadowMode(value);
+                        OnShadowSettingChanged();
+                    }, ref currentY, OptionRowHeight);
+
                     currentY += 8;
                     AddHeading("Quality Presets", ref currentY);
 

@@ -19,6 +19,7 @@ namespace Client.Main.Configuration
         public int UiVirtualWidth { get; set; } = 1280;
         public int UiVirtualHeight { get; set; } = 720;
         public string QualityPreset { get; set; } = "Auto";
+        public bool ForceMonsterMeshShadows { get; set; }
         public int DynamicLightUpdateFps { get; set; } = 23;
         public int AnimationUpdateFps { get; set; } = 23;
     }

@@ -827,6 +827,7 @@ namespace Client.Main.Controls
 
             SetDepthState(depthState);
             bool canUseMapInstancing = depthState == DepthStateDefault && Constants.ENABLE_MAP_OBJECT_INSTANCING;
+            bool canUseMonsterCrowdInstancing = depthState == DepthStateDefault;
 
             var spriteBatch = GraphicsManager.Instance.Sprite;
             Helpers.SpriteBatchScope? scope = null;
@@ -849,6 +850,9 @@ namespace Client.Main.Controls
 
                 if (usesSpriteBatch)
                 {
+                    if (canUseMonsterCrowdInstancing && ModelObject.HasPendingMonsterCrowdInstancingBatches())
+                        ModelObject.FlushMonsterCrowdInstancingBatches(this);
+
                     if (canUseMapInstancing && ModelObject.HasPendingStaticMapInstancingBatches())
                         ModelObject.FlushStaticMapInstancingBatches(this);
 
@@ -895,11 +899,20 @@ namespace Client.Main.Controls
                     currentSampler = null;
                     currentBatchDepth = null;
 
+                    if (canUseMonsterCrowdInstancing && ModelObject.TryQueueMonsterCrowdForInstancing(obj))
+                    {
+                        obj.RenderOrder = ++_renderCounter;
+                        continue;
+                    }
+
                     if (canUseMapInstancing && ModelObject.TryQueueStaticMapObjectForInstancing(obj))
                     {
                         obj.RenderOrder = ++_renderCounter;
                         continue;
                     }
+
+                    if (canUseMonsterCrowdInstancing && ModelObject.HasPendingMonsterCrowdInstancingBatches())
+                        ModelObject.FlushMonsterCrowdInstancingBatches(this);
 
                     if (canUseMapInstancing && ModelObject.HasPendingStaticMapInstancingBatches())
                         ModelObject.FlushStaticMapInstancingBatches(this);
@@ -917,6 +930,9 @@ namespace Client.Main.Controls
             }
 
             scope?.Dispose();
+
+            if (canUseMonsterCrowdInstancing && ModelObject.HasPendingMonsterCrowdInstancingBatches())
+                ModelObject.FlushMonsterCrowdInstancingBatches(this);
 
             if (canUseMapInstancing && ModelObject.HasPendingStaticMapInstancingBatches())
                 ModelObject.FlushStaticMapInstancingBatches(this);
@@ -1366,8 +1382,13 @@ namespace Client.Main.Controls
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static bool ShouldAlwaysUpdate(WorldObject obj)
         {
-            return obj.Interactive
-                || obj is WalkerObject
+            if (obj is WalkerObject walker && walker.IsMainWalker)
+                return true;
+
+            if (obj is MonsterObject monster)
+                return monster.IsOneShotPlaying;
+
+            return (obj.Interactive && obj is not MonsterObject)
                 || obj is EffectObject
                 || obj is ParticleSystem
                 || obj is DroppedItemObject

@@ -120,10 +120,17 @@ namespace Client.Main.Objects
 
         private int ResolveDynamicObjectLightBudget(Vector3 worldTranslation)
         {
-            int maxLights = Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 4 : 12;
+            bool isMonster = this is MonsterObject;
+            int maxLights = isMonster
+                ? (Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 2 : 4)
+                : (Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 4 : 12);
 
             if (LowQuality)
-                maxLights = Math.Min(maxLights, Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 2 : 6);
+            {
+                maxLights = Math.Min(maxLights, isMonster
+                    ? 1
+                    : (Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 2 : 6));
+            }
 
             var camera = Camera.Instance;
             if (camera == null)
@@ -141,9 +148,13 @@ namespace Client.Main.Objects
             if (distSq > farSq)
                 maxLights = Math.Min(maxLights, Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 1 : 3);
             else if (distSq > midSq)
-                maxLights = Math.Min(maxLights, Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 2 : 4);
+                maxLights = Math.Min(maxLights, isMonster
+                    ? (Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 1 : 2)
+                    : (Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 2 : 4));
             else if (distSq > nearSq)
-                maxLights = Math.Min(maxLights, Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 3 : 6);
+                maxLights = Math.Min(maxLights, isMonster
+                    ? (Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 2 : 3)
+                    : (Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 3 : 6));
 
             return Math.Max(1, maxLights);
         }

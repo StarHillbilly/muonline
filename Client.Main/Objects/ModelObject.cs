@@ -197,6 +197,11 @@ namespace Client.Main.Objects
         private double _lastFrameTimeMs = 0; // To track timing in methods without GameTime
         private double _lastStrideAnimationBufferUpdateTimeMs = double.NegativeInfinity;
         private float _drawShaderTimeSeconds = 0f;
+        private int _animationSampleActionIndex = -1;
+        private int _animationSampleFrame0 = 0;
+        private int _animationSampleFrame1 = 0;
+        private int _animationSampleInterpolationBucket = 0;
+        private bool _animationSampleValid = false;
 
         private readonly int _animationStrideOffset;
 

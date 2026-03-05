@@ -304,7 +304,11 @@ namespace Client.Main.Objects
             bool useShadowMap = Constants.ENABLE_DYNAMIC_LIGHTING_SHADER &&
                                 GraphicsManager.Instance.ShadowMapRenderer?.IsReady == true;
             bool isNight = Constants.ENABLE_DAY_NIGHT_CYCLE && SunCycleManager.IsNight;
-            bool meshShadowPassActive = RenderShadow && !useShadowMap && !LowQuality && !isNight;
+            bool meshShadowPassActive = RenderShadow &&
+                                        !useShadowMap &&
+                                        !LowQuality &&
+                                        !isNight &&
+                                        this is not MonsterObject;
             if (meshShadowPassActive)
             {
                 return false;
