@@ -971,7 +971,9 @@ namespace Client.Main.Controls
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static bool ShouldForceVisible(WorldObject obj)
         {
-            return obj is EffectObject || (obj is WalkerObject walker && walker.IsMainWalker);
+            return obj is EffectObject
+                || obj is ElfBuffOrbitingLight
+                || (obj is WalkerObject walker && walker.IsMainWalker);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1390,6 +1392,7 @@ namespace Client.Main.Controls
 
             return (obj.Interactive && obj is not MonsterObject)
                 || obj is EffectObject
+                || obj is ElfBuffOrbitingLight
                 || obj is ParticleSystem
                 || obj is DroppedItemObject
                 || (obj is ModelObject mo && mo.RequiresPerFrameWorldUpdate);
