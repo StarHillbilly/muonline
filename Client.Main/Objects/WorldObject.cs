@@ -295,9 +295,7 @@ namespace Client.Main.Objects
 
             DrawBoundingBox3D();
 
-            var objects = Children;
-            for (int i = 0; i < objects.Count; i++)
-                objects[i].Draw(gameTime);
+            DrawChildrenOnly(gameTime);
         }
 
         public virtual void DrawAfter(GameTime gameTime)
@@ -310,6 +308,15 @@ namespace Client.Main.Objects
             var objects = Children;
             for (int i = 0; i < objects.Count; i++)
                 objects[i].DrawAfter(gameTime);
+        }
+
+        internal void DrawChildrenOnly(GameTime gameTime)
+        {
+            if (!Visible) return;
+
+            var objects = Children;
+            for (int i = 0; i < objects.Count; i++)
+                objects[i].Draw(gameTime);
         }
 
         /// <summary>

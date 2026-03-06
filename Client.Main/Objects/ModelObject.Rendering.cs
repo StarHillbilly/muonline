@@ -116,6 +116,16 @@ namespace Client.Main.Objects
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool IsStaticMapMeshQueuedForInstancing(int mesh)
+        {
+            int[] frameTags = _staticMapInstancedMeshFrameTags;
+            if (frameTags == null || (uint)mesh >= (uint)frameTags.Length)
+                return false;
+
+            return frameTags[mesh] == MuGame.FrameIndex + 1;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private BlendState GetMeshBlendState(int mesh, bool isBlendMesh)
         {
             if (Model?.Meshes == null || mesh < 0 || mesh >= Model.Meshes.Length)
@@ -250,6 +260,95 @@ namespace Client.Main.Objects
             return DetermineShaderForMesh(mesh).NeedsSpecialShader;
         }
 
+        private void DrawProjectedShadowPass(
+            List<int> meshIndices,
+            bool doShadow,
+            bool useShadowMap,
+            Matrix shadowMatrix,
+            Matrix view,
+            Matrix projection,
+            float shadowOpacity,
+            ref bool drewBlobShadow)
+        {
+            if (!doShadow || useShadowMap)
+                return;
+
+            if (ShouldUseBlobShadowForCurrentPass())
+            {
+                if (!drewBlobShadow)
+                {
+                    DrawBlobShadow(view, projection, shadowMatrix, shadowOpacity);
+                    drewBlobShadow = true;
+                }
+            }
+            else
+            {
+                DrawMeshesShadow(meshIndices, shadowMatrix, view, projection, shadowOpacity);
+            }
+        }
+
+        internal void DrawQueuedCrowdInstancingSidePasses(GameTime gameTime)
+        {
+            if (!Visible)
+                return;
+
+            DrawBoundingBox3D();
+            SetDrawShaderTimeSeconds((float)gameTime.TotalGameTime.TotalSeconds);
+
+            if (Model?.Meshes != null && _boneVertexBuffers != null)
+            {
+                var view = Camera.Instance.View;
+                var projection = Camera.Instance.Projection;
+                var worldPos = WorldPosition;
+
+                bool useShadowMap = Constants.ENABLE_DYNAMIC_LIGHTING_SHADER &&
+                                    GraphicsManager.Instance.ShadowMapRenderer?.IsReady == true;
+                bool isNight = Constants.ENABLE_DAY_NIGHT_CYCLE && SunCycleManager.IsNight;
+                bool doShadow = false;
+                Matrix shadowMatrix = Matrix.Identity;
+                if (RenderShadow && !LowQuality && !useShadowMap && !isNight)
+                    doShadow = TryGetShadowMatrix(out shadowMatrix);
+
+                if (doShadow)
+                {
+                    float shadowOpacity = ShadowOpacity;
+                    if (World?.Terrain != null)
+                    {
+                        var dyn = World.Terrain.EvaluateDynamicLight(new Vector2(worldPos.Translation.X, worldPos.Translation.Y));
+                        float lum = (0.2126f * dyn.X + 0.7152f * dyn.Y + 0.0722f * dyn.Z) / 255f;
+                        shadowOpacity *= MathHelper.Clamp(1f - lum * 0.6f, 0.35f, 1f);
+                    }
+
+                    GroupMeshesByState(false);
+                    try
+                    {
+                        bool drewBlobShadow = false;
+                        foreach (var kvp in _meshGroups)
+                        {
+                            if (kvp.Value.Count == 0)
+                                continue;
+
+                            DrawProjectedShadowPass(
+                                kvp.Value,
+                                doShadow,
+                                useShadowMap,
+                                shadowMatrix,
+                                view,
+                                projection,
+                                shadowOpacity,
+                                ref drewBlobShadow);
+                        }
+                    }
+                    finally
+                    {
+                        ReleaseMeshGroups();
+                    }
+                }
+            }
+
+            DrawChildrenOnly(gameTime);
+        }
+
         public override void Draw(GameTime gameTime)
         {
             if (!Visible || _boneIndexBuffers == null) return;
@@ -372,21 +471,15 @@ namespace Client.Main.Objects
                     }
 
                     // Object-level shadow and highlight passes
-                    if (doShadow && !useShadowMap)
-                    {
-                        if (ShouldUseBlobShadowForCurrentPass())
-                        {
-                            if (!drewBlobShadow)
-                            {
-                                DrawBlobShadow(view, projection, shadowMatrix, shadowOpacity);
-                                drewBlobShadow = true;
-                            }
-                        }
-                        else
-                        {
-                            DrawMeshesShadow(meshIndices, shadowMatrix, view, projection, shadowOpacity);
-                        }
-                    }
+                    DrawProjectedShadowPass(
+                        meshIndices,
+                        doShadow,
+                        useShadowMap,
+                        shadowMatrix,
+                        view,
+                        projection,
+                        shadowOpacity,
+                        ref drewBlobShadow);
                     if (highlightAllowed)
                         DrawMeshesHighlight(meshIndices, highlightMatrix, highlightColor);
 
@@ -448,6 +541,9 @@ namespace Client.Main.Objects
                 IsHiddenMesh(mesh))
                 return;
 
+            if (IsStaticMapMeshQueuedForInstancing(mesh))
+                return;
+
             var gd = GraphicsDevice;
             gd.SetVertexBuffer(_boneVertexBuffers[mesh]);
             gd.Indices = _boneIndexBuffers[mesh];
@@ -468,6 +564,7 @@ namespace Client.Main.Objects
             for (int i = 0; i < meshCount; i++)
             {
                 if (IsHiddenMesh(i)) continue;
+                if (!isAfterDraw && IsStaticMapMeshQueuedForInstancing(i)) continue;
 
                 bool isBlend = IsBlendMesh(i);
                 bool isRGBA = _meshIsRGBA != null && i < _meshIsRGBA.Length && _meshIsRGBA[i];
@@ -539,6 +636,9 @@ namespace Client.Main.Objects
             if (Model?.Meshes == null || mesh < 0 || mesh >= Model.Meshes.Length)
                 return;
             if (_boneTextures?[mesh] == null || IsHiddenMesh(mesh))
+                return;
+
+            if (IsStaticMapMeshQueuedForInstancing(mesh))
                 return;
 
             bool hasCpuBuffers = _boneVertexBuffers?[mesh] != null && _boneIndexBuffers?[mesh] != null;

@@ -25,7 +25,7 @@ namespace Client.Main.Graphics
             _minInfluence = Math.Max(0f, minInfluence);
         }
 
-        public int Upload(Effect effect, IReadOnlyList<DynamicLightSnapshot> lights, Vector2 focus, int maxLights)
+        public int Upload(Effect effect, IReadOnlyList<DynamicLightSnapshot> lights, Vector2 focus, int maxLights, float focusRadius = 0f)
         {
             if (effect == null)
                 return 0;
@@ -41,7 +41,7 @@ namespace Client.Main.Graphics
             }
 
             int budget = Math.Min(capacity, maxLights);
-            int selectedCount = SelectRelevantLights(lights, focus, budget);
+            int selectedCount = SelectRelevantLights(lights, focus, Math.Max(0f, focusRadius), budget);
 
             for (int i = 0; i < selectedCount; i++)
             {
@@ -119,7 +119,7 @@ namespace Client.Main.Graphics
                      float.IsNaN(value.Z) || float.IsInfinity(value.Z));
         }
 
-        private int SelectRelevantLights(IReadOnlyList<DynamicLightSnapshot> lights, Vector2 focus, int budget)
+        private int SelectRelevantLights(IReadOnlyList<DynamicLightSnapshot> lights, Vector2 focus, float focusRadius, int budget)
         {
             if (budget <= 0)
                 return 0;
@@ -141,10 +141,24 @@ namespace Client.Main.Graphics
 
                 var lightPos = new Vector2(light.Position.X, light.Position.Y);
                 float distSq = Vector2.DistanceSquared(lightPos, focus);
-                if (distSq >= radiusSq)
+                float combinedRadius = radius + focusRadius;
+                float combinedRadiusSq = combinedRadius * combinedRadius;
+                if (distSq >= combinedRadiusSq)
                     continue;
 
-                float score = (1f - distSq / radiusSq) * light.Intensity;
+                float edgeDistance = 0f;
+                if (focusRadius > 0f)
+                {
+                    float dist = MathF.Sqrt(distSq);
+                    edgeDistance = MathF.Max(0f, dist - focusRadius);
+                }
+                else
+                {
+                    edgeDistance = MathF.Sqrt(distSq);
+                }
+
+                float edgeDistanceSq = edgeDistance * edgeDistance;
+                float score = (1f - edgeDistanceSq / radiusSq) * light.Intensity;
                 if (score <= _minInfluence)
                     continue;
 

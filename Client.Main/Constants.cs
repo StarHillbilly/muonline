@@ -232,7 +232,7 @@ namespace Client.Main
             ENABLE_MONSTER_MATERIAL_SHADER = true;
             ENABLE_WEAPON_TRAIL = true;
             ENABLE_BATCH_OPTIMIZED_SORTING = true;
-            ENABLE_MAP_OBJECT_INSTANCING = false;
+            ENABLE_MAP_OBJECT_INSTANCING = true;
             ENABLE_STATIC_CHUNK_CACHING = true;
             ENABLE_ITEM_MATERIAL_ANIMATION = false;
             ENABLE_DYNAMIC_BUFFER_POOL = true;

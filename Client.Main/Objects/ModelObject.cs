@@ -100,6 +100,7 @@ namespace Client.Main.Objects
         private bool[] _meshHiddenByScript;
         private bool[] _meshBlendByScript;
         private string[] _meshTexturePath;
+        private int[] _staticMapInstancedMeshFrameTags;
 
         private int[] _blendMeshIndicesScratch;
 
@@ -300,7 +301,8 @@ namespace Client.Main.Objects
         /// </summary>
         public virtual bool IsStaticForCaching => !ContinuousAnimation
             && (Model?.Bones == null || Model.Bones.Length == 0)
-            && !RequiresPerFrameAnimation;
+            && !RequiresPerFrameAnimation
+            && !UsesMutableMeshData;
 
         /// <summary>
         /// When true, the animation will stop at the last frame instead of looping.
@@ -328,6 +330,7 @@ namespace Client.Main.Objects
         protected virtual bool AllowLightingUpdates => true;
         protected virtual bool AllowDynamicLightingShader => true;
         protected virtual bool AllowMapObjectInstancing => true;
+        protected virtual bool UsesMutableMeshData => false;
         protected virtual bool FreezeDynamicBuffersAfterFirstBuild => false;
         internal uint AnimationPoseVersion => _animationPoseVersion;
 
@@ -426,6 +429,7 @@ namespace Client.Main.Objects
             _sortTextureHint = null;
 
             _blendMeshIndicesScratch = new int[meshCount];
+            _staticMapInstancedMeshFrameTags = new int[meshCount];
 
             // Initialize mesh buffer cache
             _meshBufferCache = new MeshBufferCache[meshCount];
@@ -617,6 +621,7 @@ namespace Client.Main.Objects
             _meshHiddenByScript = null;
             _meshBlendByScript = null;
             _meshTexturePath = null;
+            _staticMapInstancedMeshFrameTags = null;
             _blendMeshIndicesScratch = null;
             _contentLoaded = false;
             _boundingComputed = false;

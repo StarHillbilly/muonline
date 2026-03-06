@@ -115,7 +115,8 @@ namespace Client.Main.Objects
 
             int maxLights = ResolveDynamicObjectLightBudget(worldTranslation);
             var focus = new Vector2(worldTranslation.X, worldTranslation.Y);
-            _dynamicLightUploader.Upload(effect, visibleLights, focus, maxLights);
+            float focusRadius = ResolveDynamicObjectLightFocusRadius();
+            _dynamicLightUploader.Upload(effect, visibleLights, focus, maxLights, focusRadius);
         }
 
         private int ResolveDynamicObjectLightBudget(Vector3 worldTranslation)
@@ -157,6 +158,18 @@ namespace Client.Main.Objects
                     : (Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 3 : 6));
 
             return Math.Max(1, maxLights);
+        }
+
+        private float ResolveDynamicObjectLightFocusRadius()
+        {
+            var bounds = BoundingBoxWorld;
+            Vector3 extent = (bounds.Max - bounds.Min) * 0.5f;
+            float radius = MathF.Sqrt(extent.X * extent.X + extent.Y * extent.Y);
+
+            if (!float.IsFinite(radius) || radius < 32f)
+                return 32f;
+
+            return radius;
         }
     }
 }

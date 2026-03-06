@@ -14,6 +14,13 @@ namespace Client.Main.Objects
 {
     public abstract partial class ModelObject
     {
+        internal enum StaticMapInstancingQueueResult
+        {
+            None,
+            Partial,
+            Full,
+        }
+
         private readonly struct StaticMapInstancingBatchKey : IEquatable<StaticMapInstancingBatchKey>
         {
             public StaticMapInstancingBatchKey(BMD model, int meshIndex, Texture2D texture, bool twoSided)
@@ -214,10 +221,10 @@ namespace Client.Main.Objects
             return IsStaticMapInstancingSupported();
         }
 
-        internal static bool TryQueueStaticMapObjectForInstancing(WorldObject obj)
+        internal static StaticMapInstancingQueueResult TryQueueStaticMapObjectForInstancing(WorldObject obj)
         {
             if (obj is not ModelObject modelObject)
-                return false;
+                return StaticMapInstancingQueueResult.None;
 
             return modelObject.TryQueueStaticMapObjectForInstancing();
         }
@@ -519,39 +526,32 @@ namespace Client.Main.Objects
             return _cachedStaticMapInstancingTechnique != null;
         }
 
-        private bool TryQueueStaticMapObjectForInstancing()
+        private StaticMapInstancingQueueResult TryQueueStaticMapObjectForInstancing()
         {
             if (!CanUseStaticMapInstancing())
-                return false;
+                return StaticMapInstancingQueueResult.None;
 
             if (Model?.Meshes == null || _boneTextures == null)
-                return false;
+                return StaticMapInstancingQueueResult.None;
 
             int meshCount = Model.Meshes.Length;
+            EnsureStaticMapInstancingFrameTags(meshCount);
+            int instancingFrameTag = MuGame.FrameIndex + 1;
+            int opaqueMeshCount = 0;
+            int queuedOpaqueMeshCount = 0;
             byte alpha = (byte)MathHelper.Clamp(TotalAlpha * 255f, 0f, 255f);
             var instanceData = new StaticModelInstanceData(WorldPosition, new Color((byte)255, (byte)255, (byte)255, alpha));
 
             for (int meshIndex = 0; meshIndex < meshCount; meshIndex++)
             {
+                if (!ShouldQueueStaticMapMesh(meshIndex))
+                    continue;
+
+                opaqueMeshCount++;
+
                 if (!CanUseStaticMapMeshForInstancing(meshIndex))
-                    return false;
-            }
+                    continue;
 
-            for (int meshIndex = 0; meshIndex < meshCount; meshIndex++)
-            {
-                if (!BMDLoader.Instance.TryGetGpuSkinnedMeshBuffers(
-                    Model,
-                    meshIndex,
-                    out _,
-                    out _,
-                    out _))
-                {
-                    return false;
-                }
-            }
-
-            for (int meshIndex = 0; meshIndex < meshCount; meshIndex++)
-            {
                 if (!BMDLoader.Instance.TryGetGpuSkinnedMeshBuffers(
                     Model,
                     meshIndex,
@@ -559,7 +559,7 @@ namespace Client.Main.Objects
                     out var geometryIB,
                     out var boneCount))
                 {
-                    return false;
+                    continue;
                 }
 
                 bool twoSided = IsMeshTwoSided(meshIndex, false);
@@ -585,11 +585,21 @@ namespace Client.Main.Objects
                     _staticMapInstancingActiveBatches.Add(batch);
 
                 batch.Instances.Add(instanceData);
+                _staticMapInstancedMeshFrameTags[meshIndex] = instancingFrameTag;
                 _staticMapInstancedMeshInstancesThisFrame++;
+                queuedOpaqueMeshCount++;
             }
 
+            if (opaqueMeshCount == 0)
+                return StaticMapInstancingQueueResult.None;
+
+            if (queuedOpaqueMeshCount == 0)
+                return StaticMapInstancingQueueResult.None;
+
             _staticMapInstancedObjectsThisFrame++;
-            return true;
+            return queuedOpaqueMeshCount == opaqueMeshCount
+                ? StaticMapInstancingQueueResult.Full
+                : StaticMapInstancingQueueResult.Partial;
         }
 
         private bool TryQueueMonsterCrowdForInstancing()
@@ -601,8 +611,7 @@ namespace Client.Main.Objects
                 return false;
 
             int meshCount = Model.Meshes.Length;
-            byte alpha = (byte)MathHelper.Clamp(TotalAlpha * 255f, 0f, 255f);
-            var instanceData = new StaticModelInstanceData(WorldPosition, new Color((byte)255, (byte)255, (byte)255, alpha));
+            var instanceData = new StaticModelInstanceData(WorldPosition, GetCrowdInstancingBodyColor());
             bool queuedAnyMesh = false;
 
             for (int meshIndex = 0; meshIndex < meshCount; meshIndex++)
@@ -695,7 +704,10 @@ namespace Client.Main.Objects
             if (!IsMapPlacementObject || !AllowMapObjectInstancing)
                 return false;
 
-            if (HasMultiFrameAnimation())
+            if (UsesMutableMeshData)
+                return false;
+
+            if (HasAnimatedCurrentAction())
                 return false;
 
             if (!Visible || Children.Count > 0 || Model?.Meshes == null || Model.Meshes.Length == 0)
@@ -705,6 +717,9 @@ namespace Client.Main.Objects
                 return false;
 
             if (TotalAlpha < 0.999f)
+                return false;
+
+            if (HasVisibleTransparentMapMesh())
                 return false;
 
             return true;
@@ -718,7 +733,10 @@ namespace Client.Main.Objects
             if (this is not MonsterObject monster)
                 return false;
 
-            if (!Visible || !LowQuality || IsMouseHover || Children.Count > 0 || Model?.Meshes == null || Model.Meshes.Length == 0)
+            if (UsesMutableMeshData)
+                return false;
+
+            if (!Visible || IsMouseHover || Model?.Meshes == null || Model.Meshes.Length == 0)
                 return false;
 
             if (LinkParentAnimation || ParentBoneLink >= 0 || ContinuousAnimation || _isBlending || !_animationSampleValid)
@@ -736,50 +754,29 @@ namespace Client.Main.Objects
             return true;
         }
 
-        private bool HasMultiFrameAnimation()
+        private bool HasAnimatedCurrentAction()
         {
             if (Model?.Actions == null || Model.Actions.Length == 0)
                 return false;
 
-            var actions = Model.Actions;
-            for (int i = 0; i < actions.Length; i++)
-            {
-                var action = actions[i];
-                if (action != null && action.NumAnimationKeys > 1)
-                    return true;
-            }
-
-            return false;
+            int actionIndex = Math.Clamp(CurrentAction, 0, Model.Actions.Length - 1);
+            var action = Model.Actions[actionIndex];
+            return action != null && action.NumAnimationKeys > 1;
         }
 
         private bool CanUseStaticMapMeshForInstancing(int meshIndex)
         {
-            if (Model?.Meshes == null || meshIndex < 0 || meshIndex >= Model.Meshes.Length)
+            if (!ShouldQueueStaticMapMesh(meshIndex))
                 return false;
 
             if (_boneTextures == null || meshIndex >= _boneTextures.Length || _boneTextures[meshIndex] == null)
                 return false;
 
-            // Keep RGBA meshes on classic path (transparent/alpha-tested ordering).
-            // Instanced static path is opaque-only and can cause vegetation flicker.
-            if (_meshIsRGBA != null &&
-                (uint)meshIndex < (uint)_meshIsRGBA.Length &&
-                _meshIsRGBA[meshIndex])
-            {
-                return false;
-            }
-
-            if (IsHiddenMesh(meshIndex))
+            var shaderSelection = DetermineShaderForMesh(meshIndex);
+            if (shaderSelection.UseItemMaterial || shaderSelection.UseMonsterMaterial)
                 return false;
 
-            if (IsBlendMesh(meshIndex))
-                return false;
-
-            var blendState = GetMeshBlendState(meshIndex, false);
-            if (!ReferenceEquals(blendState, BlendState.Opaque))
-                return false;
-
-            return true;
+            return shaderSelection.UseDynamicLighting;
         }
 
         private bool CanUseMonsterCrowdMeshForInstancing(int meshIndex)
@@ -790,14 +787,71 @@ namespace Client.Main.Objects
             if (_boneTextures == null || meshIndex >= _boneTextures.Length || _boneTextures[meshIndex] == null)
                 return false;
 
-            if (NeedsSpecialShaderForMesh(meshIndex))
+            var shaderSelection = DetermineShaderForMesh(meshIndex);
+            if (shaderSelection.UseItemMaterial || shaderSelection.UseMonsterMaterial)
                 return false;
 
             var blendState = GetMeshBlendState(meshIndex, false);
             if (!ReferenceEquals(blendState, BlendState.Opaque))
                 return false;
 
-            return DetermineShaderForMesh(meshIndex).UseDynamicLighting;
+            return shaderSelection.UseDynamicLighting;
+        }
+
+        private void EnsureStaticMapInstancingFrameTags(int meshCount)
+        {
+            if (_staticMapInstancedMeshFrameTags != null && _staticMapInstancedMeshFrameTags.Length >= meshCount)
+                return;
+
+            _staticMapInstancedMeshFrameTags = new int[meshCount];
+        }
+
+        private bool ShouldQueueStaticMapMesh(int meshIndex)
+        {
+            if (Model?.Meshes == null || meshIndex < 0 || meshIndex >= Model.Meshes.Length)
+                return false;
+
+            if (IsHiddenMesh(meshIndex))
+                return false;
+
+            bool isBlend = IsBlendMesh(meshIndex);
+            bool isRGBA = _meshIsRGBA != null &&
+                          (uint)meshIndex < (uint)_meshIsRGBA.Length &&
+                          _meshIsRGBA[meshIndex];
+
+            if (isBlend || isRGBA)
+                return false;
+
+            string blendingMode = Model.Meshes[meshIndex].BlendingMode;
+            return string.IsNullOrEmpty(blendingMode) ||
+                   string.Equals(blendingMode, "Opaque", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool HasVisibleTransparentMapMesh()
+        {
+            if (Model?.Meshes == null)
+                return false;
+
+            for (int meshIndex = 0; meshIndex < Model.Meshes.Length; meshIndex++)
+            {
+                if (IsHiddenMesh(meshIndex))
+                    continue;
+
+                bool isBlend = IsBlendMesh(meshIndex);
+                bool isRGBA = _meshIsRGBA != null &&
+                              (uint)meshIndex < (uint)_meshIsRGBA.Length &&
+                              _meshIsRGBA[meshIndex];
+
+                if (isBlend || isRGBA)
+                    return true;
+
+                string blendingMode = Model.Meshes[meshIndex].BlendingMode;
+                if (!string.IsNullOrEmpty(blendingMode) &&
+                    !string.Equals(blendingMode, "Opaque", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
 
         private bool ShouldQueueMonsterCrowdMesh(int meshIndex)
@@ -814,6 +868,23 @@ namespace Client.Main.Objects
                           _meshIsRGBA[meshIndex];
 
             return !isRGBA && !isBlend;
+        }
+
+        private Color GetCrowdInstancingBodyColor()
+        {
+            Vector3 meshLight = Light;
+            if (LightEnabled && World?.Terrain != null)
+            {
+                Vector3 worldTranslation = WorldPosition.Translation;
+                meshLight = World.Terrain.EvaluateTerrainLight(worldTranslation.X, worldTranslation.Y) + Light;
+            }
+
+            float lightScale = TotalAlpha;
+            byte alpha = (byte)MathHelper.Clamp(TotalAlpha * 255f, 0f, 255f);
+            float r = MathF.Min(Color.R * (meshLight.X * lightScale), 255f);
+            float g = MathF.Min(Color.G * (meshLight.Y * lightScale), 255f);
+            float b = MathF.Min(Color.B * (meshLight.Z * lightScale), 255f);
+            return new Color((byte)r, (byte)g, (byte)b, alpha);
         }
 
         private static void PrepareStaticMapInstancingEffect(Effect effect, WorldControl world)
@@ -868,12 +939,29 @@ namespace Client.Main.Objects
                 return;
             }
 
-            int maxLights = Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 8 : 16;
+            int maxLights = Math.Min(
+                DynamicLightGpuUploader.ResolveEffectCapacity(effect, 32),
+                Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 16 : 32);
+
             Vector2 focus = Camera.Instance != null
                 ? new Vector2(Camera.Instance.Target.X, Camera.Instance.Target.Y)
                 : Vector2.Zero;
+            float focusRadius = ResolveStaticMapInstancingLightCoverageRadius();
 
-            _staticInstancingLightUploader.Upload(effect, visibleLights, focus, maxLights);
+            _staticInstancingLightUploader.Upload(effect, visibleLights, focus, maxLights, focusRadius);
+        }
+
+        private static float ResolveStaticMapInstancingLightCoverageRadius()
+        {
+            var camera = Camera.Instance;
+            if (camera == null)
+                return Constants.MAX_CAMERA_DISTANCE;
+
+            float cameraDistance = Vector3.Distance(camera.Position, camera.Target);
+            if (!float.IsFinite(cameraDistance) || cameraDistance <= 0f)
+                return Constants.MAX_CAMERA_DISTANCE;
+
+            return MathHelper.Clamp(cameraDistance * 1.6f, 900f, 3200f);
         }
     }
 }

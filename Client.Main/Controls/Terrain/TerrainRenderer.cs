@@ -663,12 +663,28 @@ namespace Client.Main.Controls.Terrain
                 return;
             }
 
-            int maxLights = Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 8 : DynamicLightArrayCapacity;
+            int maxLights = Math.Min(
+                DynamicLightGpuUploader.ResolveEffectCapacity(effect, DynamicLightArrayCapacity),
+                Constants.OPTIMIZE_FOR_INTEGRATED_GPU ? 16 : DynamicLightArrayCapacity);
             Vector2 focusPos = Camera.Instance != null
                 ? new Vector2(Camera.Instance.Target.X, Camera.Instance.Target.Y)
                 : Vector2.Zero;
+            float focusRadius = ResolveTerrainDynamicLightFocusRadius();
 
-            LastUploadedDynamicLights = _dynamicLightUploader.Upload(effect, visibleLights, focusPos, maxLights);
+            LastUploadedDynamicLights = _dynamicLightUploader.Upload(effect, visibleLights, focusPos, maxLights, focusRadius);
+        }
+
+        private static float ResolveTerrainDynamicLightFocusRadius()
+        {
+            var camera = Camera.Instance;
+            if (camera == null)
+                return Constants.MAX_CAMERA_DISTANCE;
+
+            float cameraDistance = Vector3.Distance(camera.Position, camera.Target);
+            if (!float.IsFinite(cameraDistance) || cameraDistance <= 0f)
+                return Constants.MAX_CAMERA_DISTANCE;
+
+            return MathHelper.Clamp(cameraDistance * 1.9f, 1200f, 4200f);
         }
 
         private void RenderTerrainBlock(int xi, int yi, bool after, int lodStep, TerrainBlock block = null)

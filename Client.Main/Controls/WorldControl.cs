@@ -901,23 +901,22 @@ namespace Client.Main.Controls
 
                     if (canUseMonsterCrowdInstancing && ModelObject.TryQueueMonsterCrowdForInstancing(obj))
                     {
+                        if (obj is ModelObject queuedMonster)
+                            queuedMonster.DrawQueuedCrowdInstancingSidePasses(time);
+
                         obj.RenderOrder = ++_renderCounter;
                         continue;
                     }
 
-                    if (canUseMapInstancing && ModelObject.TryQueueStaticMapObjectForInstancing(obj))
-                    {
-                        obj.RenderOrder = ++_renderCounter;
-                        continue;
-                    }
+                    var staticMapQueueResult = canUseMapInstancing
+                        ? ModelObject.TryQueueStaticMapObjectForInstancing(obj)
+                        : ModelObject.StaticMapInstancingQueueResult.None;
 
                     if (canUseMonsterCrowdInstancing && ModelObject.HasPendingMonsterCrowdInstancingBatches())
                         ModelObject.FlushMonsterCrowdInstancingBatches(this);
 
-                    if (canUseMapInstancing && ModelObject.HasPendingStaticMapInstancingBatches())
-                        ModelObject.FlushStaticMapInstancingBatches(this);
-
                     if (canUseMapInstancing &&
+                        staticMapQueueResult == ModelObject.StaticMapInstancingQueueResult.None &&
                         ModelObject.IsStaticMapInstancingPathAvailable() &&
                         obj is ModelObject mapModel &&
                         mapModel.IsMapPlacementObject)
